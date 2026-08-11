@@ -40,7 +40,7 @@ node --check bin/native-host.cjs
 To test end-to-end you need:
 
 1. The extension loaded in `chrome://extensions`
-2. Native host manifest installed (via `npx @different-ai/opencode-browser install`)
+2. Native host manifest installed (via `npx @talhabw/opencode-browser install`)
 3. OpenCode configured with the plugin
 
 Then run in a fresh OpenCode process:

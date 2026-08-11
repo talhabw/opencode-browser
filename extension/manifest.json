@@ -4,7 +4,7 @@
   "short_name": "OpenCode Browser",
   "version": "4.6.0",
   "description": "Browser automation for OpenCode",
-  "homepage_url": "https://github.com/different-ai/opencode-browser",
+    "homepage_url": "https://github.com/talhabw/opencode-browser",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAu9KICDxZh63m3QeQX13b37J/p7eG+cIEk4UDv+Phr7W/rqruy8DtdLFZ3WC37JYXo2Qk2iTWzIuBYjnc367RMY4Khu3f5hRyp67nvujuNY+0ACkrNGJk/viTodcW3CDcib9gijQQmPI1ZFkbec3qG0CN1hFxyn6pkdQZ8rnU9uo8ctntHIXrcfaHvQNT3AIVQfe8UjWPgalB0YCq9RamPVfMu6bG+6QLZGSKbvYDn0o5f8A/JZkm6K0MIii2EH61Oszhb/9GzZOciKqRZN+0mo23xbWHDp4ofDFyfQyMi83D3nDNldVGPSkIYlQWZaKHalaCoBRK+gzz7uuFoGrcsQIDAQAB",
   "permissions": [
     "tabs",

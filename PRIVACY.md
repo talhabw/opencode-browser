@@ -47,5 +47,5 @@ Depending on granted permissions and the sites you allow, the extension can acce
 
 Questions or concerns:
 
-- Project: https://github.com/different-ai/opencode-browser
-- Issues: https://github.com/different-ai/opencode-browser/issues
+- Project: https://github.com/talhabw/opencode-browser
+- Issues: https://github.com/talhabw/opencode-browser/issues

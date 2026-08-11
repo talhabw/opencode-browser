@@ -29978,7 +29978,7 @@ async function ensureBrokerSocket() {
   }
   if (!socket || socket.destroyed) {
     const errorMessage = lastBrokerError?.message ? ` (${lastBrokerError.message})` : "";
-    throw new Error(`Could not connect to local broker at ${SOCKET_PATH}${errorMessage}. ` + "Run `npx @different-ai/opencode-browser install` and ensure the extension is loaded.");
+    throw new Error(`Could not connect to local broker at ${SOCKET_PATH}${errorMessage}. ` + "Run `npx @talhabw/opencode-browser install` and ensure the extension is loaded.");
   }
   socket.setNoDelay(true);
   logDebug2(`broker connected socket=${SOCKET_PATH}`);
@@ -30098,8 +30098,8 @@ var browserTools = [
     return lines.join(`
 `);
   }),
-  browserTool("browser_version", "Return the installed @different-ai/opencode-browser plugin version.", {}, async () => JSON.stringify({
-    name: "@different-ai/opencode-browser",
+  browserTool("browser_version", "Return the installed @talhabw/opencode-browser plugin version.", {}, async () => JSON.stringify({
+    name: "@talhabw/opencode-browser",
     version: getPackageVersion(),
     sessionId,
     pid: process.pid,

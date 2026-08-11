@@ -1,5 +1,5 @@
 {
-  "name": "@different-ai/opencode-browser",
+  "name": "@talhabw/opencode-browser",
   "version": "4.6.1",
   "description": "Browser automation plugin for OpenCode (native messaging + per-tab ownership).",
   "type": "module",
@@ -43,12 +43,12 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/different-ai/opencode-browser.git"
+    "url": "git+https://github.com/talhabw/opencode-browser.git"
   },
   "bugs": {
-    "url": "https://github.com/different-ai/opencode-browser/issues"
+    "url": "https://github.com/talhabw/opencode-browser/issues"
   },
-  "homepage": "https://github.com/different-ai/opencode-browser#readme",
+  "homepage": "https://github.com/talhabw/opencode-browser#readme",
   "dependencies": {
     "@opencode-ai/plugin": "next",
     "agent-browser": "^0.4.0"

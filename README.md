@@ -21,7 +21,7 @@ This version is optimized for reliability and predictable multi-session behavior
 > Help me improve this! 
 
 ```bash
-bunx @different-ai/opencode-browser@latest install
+bunx @talhabw/opencode-browser@latest install
 ```
 
 Supports macOS, Linux, and Windows (Chrome/Edge/Brave/Chromium).
@@ -50,7 +50,7 @@ Your `opencode.json` or `opencode.jsonc` should contain:
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
-   "plugins": ["@different-ai/opencode-browser"]
+  "plugins": ["@talhabw/opencode-browser"]
 }
 ```
 
@@ -60,7 +60,7 @@ The plugin targets OpenCode V2. Its browser tools are registered in the
 ### Update
 
 ```bash
-bunx @different-ai/opencode-browser@latest update
+bunx @talhabw/opencode-browser@latest update
 ```
 
 ## CLI tool runner (for local debugging)
@@ -69,14 +69,14 @@ Run plugin tools directly from the package CLI (without starting an OpenCode ses
 
 ```bash
 # list available browser_* tools
-npx @different-ai/opencode-browser tools
+npx @talhabw/opencode-browser tools
 
 # run a single tool
-npx @different-ai/opencode-browser tool browser_status
-npx @different-ai/opencode-browser tool browser_query --args '{"mode":"page_text"}'
+npx @talhabw/opencode-browser tool browser_status
+npx @talhabw/opencode-browser tool browser_query --args '{"mode":"page_text"}'
 
 # run built-in end-to-end smoke test (click + text selector + container scroll)
-npx @different-ai/opencode-browser self-test
+npx @talhabw/opencode-browser self-test
 ```
 
 This is useful for debugging issue reports (for example inbox/chat UIs) before involving a full OpenCode workflow.
@@ -209,7 +209,7 @@ Diagnostics:
 ## Troubleshooting
 
 **Extension says native host not available**
-- Re-run `npx @different-ai/opencode-browser install`
+- Re-run `npx @talhabw/opencode-browser install`
 - If you loaded a custom extension ID, rerun with `--extension-id <id>`
 
 **Tab ownership errors**
@@ -220,7 +220,7 @@ Diagnostics:
 ## Uninstall
 
 ```bash
-npx @different-ai/opencode-browser uninstall
+ npx @talhabw/opencode-browser uninstall
 ```
 
 Then remove the unpacked extension in `chrome://extensions` and remove the plugin from `opencode.json` or `opencode.jsonc`.

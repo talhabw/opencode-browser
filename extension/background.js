@@ -233,7 +233,7 @@ async function connect() {
       if (err?.message) {
         connectionAttempts++
         if (connectionAttempts === 1) {
-          console.log("[OpenCode] Native host not available. Run: npx @different-ai/opencode-browser install")
+          console.log("[OpenCode] Native host not available. Run: npx @talhabw/opencode-browser install")
         } else if (connectionAttempts % 20 === 0) {
           console.log("[OpenCode] Still waiting for native host...")
         }

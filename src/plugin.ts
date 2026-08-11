@@ -184,7 +184,7 @@ async function ensureBrokerSocket(): Promise<net.Socket> {
     const errorMessage = lastBrokerError?.message ? ` (${lastBrokerError.message})` : "";
     throw new Error(
       `Could not connect to local broker at ${SOCKET_PATH}${errorMessage}. ` +
-        "Run `npx @different-ai/opencode-browser install` and ensure the extension is loaded."
+        "Run `npx @talhabw/opencode-browser install` and ensure the extension is loaded."
     );
   }
 
@@ -332,9 +332,9 @@ const browserTools: BrowserTool[] = [
         return lines.join("\n");
       }),
 
-      browserTool("browser_version", "Return the installed @different-ai/opencode-browser plugin version.", {}, async () =>
+      browserTool("browser_version", "Return the installed @talhabw/opencode-browser plugin version.", {}, async () =>
         JSON.stringify({
-          name: "@different-ai/opencode-browser",
+          name: "@talhabw/opencode-browser",
           version: getPackageVersion(),
           sessionId,
           pid: process.pid,

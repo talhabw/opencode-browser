@@ -787,7 +787,7 @@ Find it at ${color("cyan", "chrome://extensions")}:
 
   header("Step 7: Configure OpenCode");
 
-  const desiredPlugin = "@different-ai/opencode-browser";
+  const desiredPlugin = "@talhabw/opencode-browser";
 
   function normalizePlugins(val) {
     if (Array.isArray(val)) return val.filter((v) => typeof v === "string");
