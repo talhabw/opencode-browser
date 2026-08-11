@@ -50,9 +50,12 @@ Your `opencode.json` or `opencode.jsonc` should contain:
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugin": ["@different-ai/opencode-browser"]
+   "plugins": ["@different-ai/opencode-browser"]
 }
 ```
+
+The plugin targets OpenCode V2. Its browser tools are registered in the
+`opencode-browser` CodeMode namespace.
 
 ### Update
 

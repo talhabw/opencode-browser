@@ -49,14 +49,11 @@
     "url": "https://github.com/different-ai/opencode-browser/issues"
   },
   "homepage": "https://github.com/different-ai/opencode-browser#readme",
-  "peerDependencies": {
-    "@opencode-ai/plugin": "*"
-  },
   "dependencies": {
+    "@opencode-ai/plugin": "next",
     "agent-browser": "^0.4.0"
   },
   "devDependencies": {
-    "@opencode-ai/plugin": "*",
     "bun-types": "*"
   }
 }

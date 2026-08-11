@@ -1,5 +1,4 @@
-import type { Plugin } from "@opencode-ai/plugin";
-import { tool } from "@opencode-ai/plugin";
+import { Plugin } from "@opencode-ai/plugin";
 import net from "net";
 import { createAgentBackend, type AgentBackend } from "./agent-backend.js";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync } from "fs";
@@ -29,8 +28,6 @@ function getPackageVersion(): string {
   cachedVersion = "unknown";
   return cachedVersion;
 }
-
-const { schema } = tool;
 
 const BASE_DIR = join(homedir(), ".opencode-browser");
 const SOCKET_PATH = getBrokerSocketPath();
@@ -272,11 +269,199 @@ async function statusRequest(): Promise<any> {
   return await brokerRequest("status", {});
 }
 
-const plugin: Plugin = async (ctx) => {
+type JsonSchema = Record<string, unknown>;
+type BrowserTool = {
+  name: string;
+  description: string;
+  input: JsonSchema;
+  execute: (args: any) => Promise<string>;
+  options: { namespace: string; codemode: true };
+};
 
+function stringField(): JsonSchema {
+  return { type: "string" };
+}
+
+function numberField(): JsonSchema {
+  return { type: "number" };
+}
+
+function booleanField(): JsonSchema {
+  return { type: "boolean" };
+}
+
+function objectInput(properties: Record<string, JsonSchema>, required: string[] = []): JsonSchema {
   return {
-    tool: {
-      browser_debug: tool({
+    type: "object",
+    properties,
+    additionalProperties: false,
+    ...(required.length > 0 ? { required } : {}),
+  };
+}
+
+function browserTool(
+  name: string,
+  description: string,
+  properties: Record<string, JsonSchema>,
+  execute: (args: any) => Promise<string>,
+  required: string[] = []
+): BrowserTool {
+  return {
+    name,
+    description,
+    input: objectInput(properties, required),
+    execute,
+    options: { namespace: "opencode-browser", codemode: true },
+  };
+}
+
+const browserTools: BrowserTool[] = [
+      browserTool("browser_debug", "Debug plugin loading and connection status.", {}, async () => {
+        const lines = [
+          "loaded: true",
+          `sessionId: ${sessionId}`,
+          `pid: ${process.pid}`,
+          `backend: ${USE_AGENT_BACKEND ? "agent-browser" : "extension"}`,
+          `brokerSocket: ${SOCKET_PATH}`,
+          `agentSession: ${agentBackend?.session ?? ""}`,
+          `agentConnection: ${JSON.stringify(agentBackend?.connection ?? null)}`,
+          `agentBrowserVersion: ${agentBackend?.getVersion?.() ?? ""}`,
+          `pluginVersion: ${getPackageVersion()}`,
+          `timestamp: ${new Date().toISOString()}`,
+        ];
+        return lines.join("\n");
+      }),
+
+      browserTool("browser_version", "Return the installed @different-ai/opencode-browser plugin version.", {}, async () =>
+        JSON.stringify({
+          name: "@different-ai/opencode-browser",
+          version: getPackageVersion(),
+          sessionId,
+          pid: process.pid,
+          backend: USE_AGENT_BACKEND ? "agent-browser" : "extension",
+          agentBrowserVersion: agentBackend?.getVersion?.() ?? null,
+        })
+      ),
+
+      browserTool("browser_status", "Check backend connection status and current tab claims.", {}, async () =>
+        JSON.stringify(await statusRequest())
+      ),
+
+      browserTool("browser_get_tabs", "List all open browser tabs", {}, async () =>
+        toolResultText(await toolRequest("get_tabs", {}), "ok")
+      ),
+
+      browserTool("browser_list_claims", "List tab ownership claims", {}, async () =>
+        JSON.stringify(await brokerOnlyRequest("list_claims", {}))
+      ),
+
+      browserTool("browser_claim_tab", "Claim a browser tab for this session", {
+        tabId: numberField(),
+        force: booleanField(),
+      }, async ({ tabId, force }) => JSON.stringify(await brokerOnlyRequest("claim_tab", { tabId, force })), ["tabId"]),
+
+      browserTool("browser_release_tab", "Release a claimed browser tab", {
+        tabId: numberField(),
+      }, async ({ tabId }) => JSON.stringify(await brokerOnlyRequest("release_tab", { tabId })), ["tabId"]),
+
+      browserTool("browser_open_tab", "Open a new browser tab", {
+        url: stringField(),
+        active: booleanField(),
+      }, async ({ url, active }) => toolResultText(await toolRequest("open_tab", { url, active }), "Opened new tab")),
+
+      browserTool("browser_close_tab", "Close a browser tab owned by this session", {
+        tabId: numberField(),
+      }, async ({ tabId }) => toolResultText(await toolRequest("close_tab", { tabId }), "Closed tab")),
+
+      browserTool("browser_navigate", "Navigate to a URL in the browser", {
+        url: stringField(),
+        tabId: numberField(),
+      }, async ({ url, tabId }) => toolResultText(await toolRequest("navigate", { url, tabId }), `Navigated to ${url}`), ["url"]),
+
+      browserTool("browser_click", "Click an element on the page using a CSS selector", {
+        selector: stringField(), index: numberField(), tabId: numberField(), timeoutMs: numberField(), pollMs: numberField(),
+      }, async ({ selector, index, tabId, timeoutMs, pollMs }) =>
+        toolResultText(await toolRequest("click", { selector, index, tabId, timeoutMs, pollMs }), `Clicked ${selector}`), ["selector"]),
+
+      browserTool("browser_type", "Type text into an input element", {
+        selector: stringField(), text: stringField(), clear: booleanField(), index: numberField(), tabId: numberField(), timeoutMs: numberField(), pollMs: numberField(),
+      }, async ({ selector, text, clear, index, tabId, timeoutMs, pollMs }) =>
+        toolResultText(await toolRequest("type", { selector, text, clear, index, tabId, timeoutMs, pollMs }), `Typed "${text}" into ${selector}`), ["selector", "text"]),
+
+      browserTool("browser_select", "Select an option in a native select element", {
+        selector: stringField(), value: stringField(), label: stringField(), optionIndex: numberField(), index: numberField(), tabId: numberField(), timeoutMs: numberField(), pollMs: numberField(),
+      }, async ({ selector, value, label, optionIndex, index, tabId, timeoutMs, pollMs }) => {
+        const summary = value ?? label ?? (optionIndex != null ? String(optionIndex) : "option");
+        return toolResultText(await toolRequest("select", { selector, value, label, optionIndex, index, tabId, timeoutMs, pollMs }), `Selected ${summary} in ${selector}`);
+      }, ["selector"]),
+
+      browserTool("browser_screenshot", "Take a screenshot of the current page. Returns base64 image data URL.", {
+        tabId: numberField(),
+      }, async ({ tabId }) => toolResultText(await toolRequest("screenshot", { tabId }), "Screenshot failed")),
+
+      browserTool("browser_snapshot", "Get an accessibility tree snapshot of the page.", {
+        tabId: numberField(),
+      }, async ({ tabId }) => toolResultText(await toolRequest("snapshot", { tabId }), "Snapshot failed")),
+
+      browserTool("browser_scroll", "Scroll the page or scroll an element into view", {
+        selector: stringField(), x: numberField(), y: numberField(), tabId: numberField(), timeoutMs: numberField(), pollMs: numberField(),
+      }, async ({ selector, x, y, tabId, timeoutMs, pollMs }) => toolResultText(await toolRequest("scroll", { selector, x, y, tabId, timeoutMs, pollMs }), "Scrolled")),
+
+      browserTool("browser_wait", "Wait for a specified duration", {
+        ms: numberField(), tabId: numberField(),
+      }, async ({ ms, tabId }) => toolResultText(await toolRequest("wait", { ms, tabId }), "Waited")),
+
+      browserTool("browser_query", "Read data from the page using selectors, optional wait, or page_text extraction (shadow DOM + same-origin iframes).", {
+        selector: stringField(), mode: stringField(), attribute: stringField(), property: stringField(), index: numberField(), limit: numberField(), timeoutMs: numberField(), pollMs: numberField(), pattern: stringField(), flags: stringField(), tabId: numberField(),
+      }, async ({ selector, mode, attribute, property, index, limit, timeoutMs, pollMs, pattern, flags, tabId }) => toolResultText(await toolRequest("query", { selector, mode, attribute, property, index, limit, timeoutMs, pollMs, pattern, flags, tabId }), "Query failed")),
+
+      browserTool("browser_download", "Download a file via URL or by clicking an element on the page.", {
+        url: stringField(), selector: stringField(), filename: stringField(), conflictAction: stringField(), saveAs: booleanField(), wait: booleanField(), downloadTimeoutMs: numberField(), index: numberField(), tabId: numberField(), timeoutMs: numberField(), pollMs: numberField(),
+      }, async ({ url, selector, filename, conflictAction, saveAs, wait, downloadTimeoutMs, index, tabId, timeoutMs, pollMs }) => toolResultText(await toolRequest("download", { url, selector, filename, conflictAction, saveAs, wait, downloadTimeoutMs, index, tabId, timeoutMs, pollMs }), "Download started")),
+
+      browserTool("browser_list_downloads", "List recent downloads (Chrome backend) or session downloads (agent backend).", {
+        limit: numberField(), state: stringField(),
+      }, async ({ limit, state }) => toolResultText(await toolRequest("list_downloads", { limit, state }), "[]")),
+
+      browserTool("browser_set_file_input", "Set a file input element's selected file using a local file path.", {
+        selector: stringField(), filePath: stringField(), fileName: stringField(), mimeType: stringField(), index: numberField(), tabId: numberField(), timeoutMs: numberField(), pollMs: numberField(),
+      }, async ({ selector, filePath, fileName, mimeType, index, tabId, timeoutMs, pollMs }) => {
+        if (USE_AGENT_BACKEND) return toolResultText(await toolRequest("set_file_input", { selector, filePath, tabId, index, timeoutMs, pollMs }), "Set file input");
+        const file = buildFileUploadPayload(filePath, fileName, mimeType);
+        return toolResultText(await toolRequest("set_file_input", { selector, tabId, index, timeoutMs, pollMs, files: [file] }), "Set file input");
+      }, ["selector", "filePath"]),
+
+      browserTool("browser_highlight", "Highlight an element on the page with a colored border for visual debugging.", {
+        selector: stringField(), index: numberField(), duration: numberField(), color: stringField(), showInfo: booleanField(), tabId: numberField(), timeoutMs: numberField(), pollMs: numberField(),
+      }, async ({ selector, index, duration, color, showInfo, tabId, timeoutMs, pollMs }) => toolResultText(await toolRequest("highlight", { selector, index, duration, color, showInfo, tabId, timeoutMs, pollMs }), "Highlight failed"), ["selector"]),
+
+      browserTool("browser_console", "Read console log messages from the page. Uses chrome.debugger API for complete capture.", {
+        tabId: numberField(), clear: booleanField(), filter: stringField(),
+      }, async ({ tabId, clear, filter }) => toolResultText(await toolRequest("console", { tabId, clear, filter }), "[]")),
+
+      browserTool("browser_errors", "Read JavaScript errors from the page. Uses chrome.debugger API for complete capture.", {
+        tabId: numberField(), clear: booleanField(),
+      }, async ({ tabId, clear }) => toolResultText(await toolRequest("errors", { tabId, clear }), "[]")),
+];
+
+const plugin = Plugin.define({
+  id: "opencode-browser",
+  setup: async (ctx) => {
+    await ctx.tool.transform((tools) => {
+      for (const browserTool of browserTools) {
+        tools.add({
+          ...browserTool,
+          execute: async (args: any, toolContext: any) => ({
+            content: await browserTool.execute(args),
+          }),
+        } as any);
+      }
+    });
+  },
+});
+
+export default plugin;
+/*
         description: "Debug plugin loading and connection status.",
         args: {},
         async execute(args, ctx) {
@@ -667,6 +852,4 @@ const plugin: Plugin = async (ctx) => {
       }),
     },
   };
-};
-
-export default plugin;
+*/
