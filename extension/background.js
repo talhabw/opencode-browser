@@ -521,21 +521,21 @@ async function pageOps(command, args) {
     if (!target) return []
     const results = []
     const seen = new Set()
+    const pool = []
     const candidates = deepQuerySelectorAll(
       "button, a, label, option, summary, [role='button'], [role='link'], [role='tab'], [role='menuitem'], [role='option'], [role='listitem'], [role='row'], [tabindex]",
       document
     )
     for (const el of candidates) {
-      if (!matchesText(el.innerText || el.textContent || "", target)) continue
-      if (!seen.has(el)) {
-        seen.add(el)
-        results.push(el)
-      }
+      const text = el.innerText || el.textContent || ""
+      if (!matchesText(text, target)) continue
+      pool.push({ el, text: normalizeText(text) })
     }
 
     const generic = deepQuerySelectorAll("div, span, li, article", document)
     for (const el of generic) {
-      if (!matchesText(el.innerText || el.textContent || "", target)) continue
+      const text = el.innerText || el.textContent || ""
+      if (!matchesText(text, target)) continue
       const style = window.getComputedStyle(el)
       const likelyInteractive =
         !!el.getAttribute("onclick") ||
@@ -543,15 +543,24 @@ async function pageOps(command, args) {
         el.tabIndex >= 0 ||
         style.cursor === "pointer"
       if (!likelyInteractive) continue
-      if (!seen.has(el)) {
-        seen.add(el)
-        results.push(el)
-      }
+      pool.push({ el, text: normalizeText(text) })
     }
 
     const inputs = deepQuerySelectorAll("input[type='button'], input[type='submit'], input[type='reset']", document)
     for (const el of inputs) {
       if (!matchesText(el.value || "", target)) continue
+      pool.push({ el, text: normalizeText(el.value || "") })
+    }
+
+    const normTarget = normalizeText(target)
+    pool.sort((a, b) => {
+      const aExact = a.text === normTarget ? 0 : 1
+      const bExact = b.text === normTarget ? 0 : 1
+      if (aExact !== bExact) return aExact - bExact
+      return a.text.length - b.text.length
+    })
+
+    for (const { el } of pool) {
       if (!seen.has(el)) {
         seen.add(el)
         results.push(el)
@@ -624,7 +633,6 @@ async function pageOps(command, args) {
       el.dispatchEvent(new MouseEvent("mousemove", opts))
       el.dispatchEvent(new MouseEvent("mousedown", opts))
       el.dispatchEvent(new MouseEvent("mouseup", opts))
-      el.dispatchEvent(new MouseEvent("click", opts))
     } catch {}
 
     try {
@@ -911,7 +919,7 @@ async function pageOps(command, args) {
       if (scrollX || scrollY) {
         try {
           if (typeof match.chosen.scrollBy === "function") {
-            match.chosen.scrollBy({ left: scrollX, top: scrollY, behavior: "smooth" })
+            match.chosen.scrollBy({ left: scrollX, top: scrollY, behavior: "instant" })
           } else {
             match.chosen.scrollLeft = Number(match.chosen.scrollLeft || 0) + scrollX
             match.chosen.scrollTop = Number(match.chosen.scrollTop || 0) + scrollY
@@ -924,7 +932,7 @@ async function pageOps(command, args) {
       }
 
       try {
-        match.chosen.scrollIntoView({ behavior: "smooth", block: "center" })
+        match.chosen.scrollIntoView({ behavior: "instant", block: "center" })
       } catch {}
       return { ok: true, selectorUsed: match.selectorUsed }
     }

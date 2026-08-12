@@ -29053,22 +29053,83 @@ var Updated6 = ephemeral({
 });
 var Event8 = { Updated: Updated6, Definitions: inventory(Updated6) };
 // src/plugin.ts
-import net2 from "net";
-
-// src/agent-backend.ts
 import net from "net";
-import { mkdirSync, readFileSync } from "fs";
-import { homedir, tmpdir } from "os";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync } from "fs";
+import { homedir, userInfo } from "os";
 import { basename, dirname, isAbsolute, join as join2, resolve as resolve2 } from "path";
-import { spawn } from "child_process";
-import { createRequire } from "module";
-var agentRequire = createRequire(import.meta.url);
-var REQUEST_TIMEOUT_MS = 60000;
-var DEFAULT_PAGE_TEXT_LIMIT = 20000;
-var DEFAULT_LIST_LIMIT = 50;
-var DEFAULT_POLL_MS = 200;
+import { execSync, spawn } from "child_process";
+import { fileURLToPath } from "url";
+var __filename2 = fileURLToPath(import.meta.url);
+var __dirname2 = dirname(__filename2);
+var PACKAGE_JSON_PATH = join2(__dirname2, "..", "package.json");
+var cachedVersion = null;
+function getPackageVersion() {
+  if (cachedVersion)
+    return cachedVersion;
+  try {
+    const pkg = JSON.parse(readFileSync(PACKAGE_JSON_PATH, "utf8"));
+    if (typeof pkg?.version === "string") {
+      cachedVersion = pkg.version;
+      return cachedVersion;
+    }
+  } catch {}
+  cachedVersion = "unknown";
+  return cachedVersion;
+}
 var BASE_DIR = join2(homedir(), ".opencode-browser");
-var DEFAULT_DOWNLOADS_DIR = join2(BASE_DIR, "downloads");
+var SOCKET_PATH = getBrokerSocketPath();
+var LOG_PATH = join2(BASE_DIR, "plugin.log");
+function getSafePipeName() {
+  try {
+    const username = userInfo().username || "user";
+    return `opencode-browser-${username}`.replace(/[^a-zA-Z0-9._-]/g, "_");
+  } catch {
+    return "opencode-browser";
+  }
+}
+function getBrokerSocketPath() {
+  const override = process.env.OPENCODE_BROWSER_BROKER_SOCKET;
+  if (override)
+    return override;
+  if (process.platform === "win32")
+    return `\\\\.\\pipe\\${getSafePipeName()}`;
+  return join2(BASE_DIR, "broker.sock");
+}
+mkdirSync(BASE_DIR, { recursive: true });
+function logDebug2(message) {
+  try {
+    appendFileSync(LOG_PATH, `[${new Date().toISOString()}] ${message}
+`, "utf8");
+  } catch {}
+}
+logDebug2(`plugin loaded v${getPackageVersion()} pid=${process.pid} socket=${SOCKET_PATH}`);
+var DEFAULT_MAX_UPLOAD_BYTES = 512 * 1024;
+var MAX_UPLOAD_BYTES = (() => {
+  const raw = process.env.OPENCODE_BROWSER_MAX_UPLOAD_BYTES;
+  const value3 = raw ? Number(raw) : NaN;
+  if (Number.isFinite(value3) && value3 > 0)
+    return value3;
+  return DEFAULT_MAX_UPLOAD_BYTES;
+})();
+function resolveUploadPath(filePath) {
+  const trimmed = typeof filePath === "string" ? filePath.trim() : "";
+  if (!trimmed)
+    throw new Error("filePath is required");
+  return isAbsolute(trimmed) ? trimmed : resolve2(process.cwd(), trimmed);
+}
+function buildFileUploadPayload(filePath, fileName, mimeType) {
+  const absPath = resolveUploadPath(filePath);
+  const stats = statSync(absPath);
+  if (!stats.isFile())
+    throw new Error(`Not a file: ${absPath}`);
+  if (stats.size > MAX_UPLOAD_BYTES) {
+    throw new Error(`File too large (${stats.size} bytes). Max is ${MAX_UPLOAD_BYTES} bytes (OPENCODE_BROWSER_MAX_UPLOAD_BYTES).`);
+  }
+  const base642 = readFileSync(absPath).toString("base64");
+  const name = typeof fileName === "string" && fileName.trim() ? fileName.trim() : basename(absPath);
+  const mt = typeof mimeType === "string" && mimeType.trim() ? mimeType.trim() : undefined;
+  return { name, mimeType: mt, base64: base642 };
+}
 function createJsonLineParser(onMessage) {
   let buffer = "";
   return (chunk) => {
@@ -29092,850 +29153,12 @@ function writeJsonLine(socket, msg) {
   socket.write(JSON.stringify(msg) + `
 `);
 }
-async function sleep3(ms) {
-  return await new Promise((resolve3) => setTimeout(resolve3, ms));
-}
-function parseEnvNumber(value3) {
-  if (!value3)
-    return null;
-  const parsed = Number(value3);
-  return Number.isFinite(parsed) ? parsed : null;
-}
-function getAgentSession(sessionId) {
-  const override = process.env.OPENCODE_BROWSER_AGENT_SESSION?.trim();
-  if (override)
-    return override;
-  return `opencode-${sessionId}`;
-}
-function getAgentPortForSession(session) {
-  let hash3 = 0;
-  for (let i = 0;i < session.length; i++) {
-    hash3 = (hash3 << 5) - hash3 + session.charCodeAt(i);
-    hash3 |= 0;
-  }
-  return 49152 + Math.abs(hash3) % 16383;
-}
-function getAgentConnectionInfo(session) {
-  const socketOverride = process.env.OPENCODE_BROWSER_AGENT_SOCKET?.trim();
-  if (socketOverride) {
-    return { type: "unix", path: socketOverride };
-  }
-  const hostOverride = process.env.OPENCODE_BROWSER_AGENT_HOST?.trim();
-  const portOverride = parseEnvNumber(process.env.OPENCODE_BROWSER_AGENT_PORT);
-  const transportOverride = process.env.OPENCODE_BROWSER_AGENT_TRANSPORT?.toLowerCase();
-  const forceTcp = transportOverride === "tcp" || process.env.OPENCODE_BROWSER_AGENT_TCP === "1";
-  if (hostOverride || portOverride !== null || forceTcp || process.platform === "win32") {
-    const host = hostOverride || "127.0.0.1";
-    const port = portOverride ?? getAgentPortForSession(session);
-    return { type: "tcp", host, port };
-  }
-  return { type: "unix", path: join2(tmpdir(), `agent-browser-${session}.sock`) };
-}
-function isLocalHost(host) {
-  return host === "127.0.0.1" || host === "localhost" || host === "::1";
-}
-function resolveAgentDaemonPath() {
-  const override = process.env.OPENCODE_BROWSER_AGENT_DAEMON?.trim();
-  if (override)
-    return override;
-  try {
-    return agentRequire.resolve("agent-browser/dist/daemon.js");
-  } catch {
-    return null;
-  }
-}
-function resolveAgentNodePath() {
-  const override = process.env.OPENCODE_BROWSER_AGENT_NODE?.trim();
-  return override || process.execPath;
-}
-function getAgentPackageVersion() {
-  try {
-    const pkgPath = agentRequire.resolve("agent-browser/package.json");
-    const pkg = JSON.parse(readFileSync(pkgPath, "utf8"));
-    return typeof pkg?.version === "string" ? pkg.version : null;
-  } catch {
-    return null;
-  }
-}
-function shouldAutoStartAgent(connection) {
-  const autoStart = process.env.OPENCODE_BROWSER_AGENT_AUTOSTART?.toLowerCase();
-  if (autoStart && ["0", "false", "no"].includes(autoStart))
-    return false;
-  if (connection.type === "unix")
-    return true;
-  return connection.type === "tcp" && process.platform === "win32" && isLocalHost(connection.host);
-}
-async function maybeStartAgentDaemon(connection, session) {
-  if (!shouldAutoStartAgent(connection))
-    return;
-  const daemonPath = resolveAgentDaemonPath();
-  if (!daemonPath) {
-    throw new Error("agent-browser dependency not found. Install agent-browser or set OPENCODE_BROWSER_AGENT_DAEMON.");
-  }
-  try {
-    const child = spawn(resolveAgentNodePath(), [daemonPath], {
-      detached: true,
-      stdio: "ignore",
-      env: {
-        ...process.env,
-        AGENT_BROWSER_SESSION: session,
-        AGENT_BROWSER_DAEMON: "1"
-      }
-    });
-    child.unref();
-  } catch {}
-}
-function buildEvalScript(body) {
-  return `(() => { ${body} })()`;
-}
-function buildAgentTypeScript(selector, indexValue, text, clear) {
-  const payload = { selector, index: indexValue, text, clear };
-  return buildEvalScript(`
-    const payload = ${JSON.stringify(payload)};
-    let matches = [];
-    try {
-      matches = Array.from(document.querySelectorAll(payload.selector));
-    } catch {
-      return { ok: false, error: "Invalid selector" };
-    }
-    const element = matches[payload.index];
-    if (!element) return { ok: false, error: "Element not found" };
-    const tag = element.tagName ? element.tagName.toUpperCase() : "";
-    if (tag === "INPUT" || tag === "TEXTAREA") {
-      if (payload.clear) element.value = "";
-      element.value = (element.value || "") + payload.text;
-      element.dispatchEvent(new Event("input", { bubbles: true }));
-      element.dispatchEvent(new Event("change", { bubbles: true }));
-      return { ok: true };
-    }
-    if (element.isContentEditable) {
-      if (payload.clear) element.textContent = "";
-      element.textContent = (element.textContent || "") + payload.text;
-      element.dispatchEvent(new Event("input", { bubbles: true }));
-      return { ok: true };
-    }
-    return { ok: false, error: "Element is not typable" };
-  `);
-}
-function buildAgentSelectScript(selector, indexValue, value3, label, optionIndex) {
-  const payload = {
-    selector,
-    index: indexValue,
-    value: value3 ?? null,
-    label: label ?? null,
-    optionIndex: Number.isFinite(optionIndex) ? optionIndex : null
-  };
-  return buildEvalScript(`
-    const payload = ${JSON.stringify(payload)};
-    let matches = [];
-    try {
-      matches = Array.from(document.querySelectorAll(payload.selector));
-    } catch {
-      return { ok: false, error: "Invalid selector" };
-    }
-    const element = matches[payload.index];
-    if (!element) return { ok: false, error: "Element not found" };
-    if (!element.tagName || element.tagName.toUpperCase() !== "SELECT") {
-      return { ok: false, error: "Element is not a select" };
-    }
-    const options = Array.from(element.options || []);
-    let chosen = null;
-    if (payload.value !== null) {
-      chosen = options.find((option) => option.value === payload.value) || null;
-    }
-    if (!chosen && payload.label !== null) {
-      const target = payload.label.trim();
-      chosen = options.find((option) => (option.label || option.textContent || "").trim() === target) || null;
-    }
-    if (!chosen && payload.optionIndex !== null) {
-      chosen = options[payload.optionIndex] || null;
-    }
-    if (!chosen) return { ok: false, error: "Option not found" };
-    element.value = chosen.value;
-    chosen.selected = true;
-    element.dispatchEvent(new Event("input", { bubbles: true }));
-    element.dispatchEvent(new Event("change", { bubbles: true }));
-    return {
-      ok: true,
-      value: element.value,
-      label: (chosen.label || chosen.textContent || "").trim(),
-    };
-  `);
-}
-function buildAgentPageTextScript(limit, pattern, flags) {
-  const payload = { limit, pattern, flags };
-  return buildEvalScript(`
-    const payload = ${JSON.stringify(payload)};
-    const safeString = (value) => (typeof value === "string" ? value : "");
-    const bodyText = safeString(document.body ? document.body.innerText : "");
-    const inputText = Array.from(document.querySelectorAll("input, textarea, [contenteditable='true']"))
-      .map((element) => {
-        if (element.tagName === "INPUT" || element.tagName === "TEXTAREA") {
-          return safeString(element.value);
-        }
-        return safeString(element.textContent);
-      })
-      .filter(Boolean)
-      .join("
-");
-    const combined = [bodyText, inputText].filter(Boolean).join("
-
-");
-    const maxSize = Number.isFinite(payload.limit) ? payload.limit : ${DEFAULT_PAGE_TEXT_LIMIT};
-    const text = combined.slice(0, Math.max(0, maxSize));
-    let matches = [];
-    if (payload.pattern) {
-      try {
-        const re = new RegExp(payload.pattern, payload.flags || "i");
-        let match;
-        while ((match = re.exec(text)) && matches.length < 50) {
-          matches.push(match[0]);
-          if (!re.global) break;
-        }
-      } catch {
-        matches = [];
-      }
-    }
-    return {
-      url: location.href,
-      title: document.title,
-      text,
-      matches,
-    };
-  `);
-}
-function buildAgentListScript(selector, limit) {
-  const payload = { selector, limit };
-  return buildEvalScript(`
-    const payload = ${JSON.stringify(payload)};
-    let nodes = [];
-    try {
-      nodes = Array.from(document.querySelectorAll(payload.selector));
-    } catch {
-      return { ok: false, error: "Invalid selector" };
-    }
-    const maxItems = Math.min(Math.max(1, payload.limit || ${DEFAULT_LIST_LIMIT}), 200);
-    const items = nodes.slice(0, maxItems).map((element) => ({
-      text: (element.innerText || element.textContent || "").trim().slice(0, 200),
-      tag: (element.tagName || "").toLowerCase(),
-      ariaLabel: element.getAttribute ? element.getAttribute("aria-label") : null,
-    }));
-    return { ok: true, value: { items, count: nodes.length } };
-  `);
-}
-function buildAgentNthValueScript(selector, indexValue) {
-  const payload = { selector, index: indexValue };
-  return buildEvalScript(`
-    const payload = ${JSON.stringify(payload)};
-    let nodes = [];
-    try {
-      nodes = Array.from(document.querySelectorAll(payload.selector));
-    } catch {
-      return { ok: false, error: "Invalid selector" };
-    }
-    const element = nodes[payload.index];
-    if (!element) return { ok: false, error: "Element not found" };
-    const value = element.value !== undefined ? element.value : "";
-    return { ok: true, value: typeof value === "string" ? value : String(value ?? "") };
-  `);
-}
-function buildAgentNthAttributeScript(selector, indexValue, attribute) {
-  const payload = { selector, index: indexValue, attribute };
-  return buildEvalScript(`
-    const payload = ${JSON.stringify(payload)};
-    let nodes = [];
-    try {
-      nodes = Array.from(document.querySelectorAll(payload.selector));
-    } catch {
-      return { ok: false, error: "Invalid selector" };
-    }
-    const element = nodes[payload.index];
-    if (!element) return { ok: false, error: "Element not found" };
-    const value = element.getAttribute ? element.getAttribute(payload.attribute) : null;
-    return { ok: true, value };
-  `);
-}
-function buildAgentNthPropertyScript(selector, indexValue, property2) {
-  const payload = { selector, index: indexValue, property: property2 };
-  return buildEvalScript(`
-    const payload = ${JSON.stringify(payload)};
-    let nodes = [];
-    try {
-      nodes = Array.from(document.querySelectorAll(payload.selector));
-    } catch {
-      return { ok: false, error: "Invalid selector" };
-    }
-    const element = nodes[payload.index];
-    if (!element) return { ok: false, error: "Element not found" };
-    return { ok: true, value: element[payload.property] };
-  `);
-}
-function buildAgentOuterHtmlScript(selector, indexValue) {
-  const payload = { selector, index: indexValue };
-  return buildEvalScript(`
-    const payload = ${JSON.stringify(payload)};
-    let nodes = [];
-    try {
-      nodes = Array.from(document.querySelectorAll(payload.selector));
-    } catch {
-      return { ok: false, error: "Invalid selector" };
-    }
-    const element = nodes[payload.index];
-    if (!element) return { ok: false, error: "Element not found" };
-    return { ok: true, value: element.outerHTML };
-  `);
-}
-function ensureEvalResult(result3, fallback) {
-  if (!result3 || typeof result3 !== "object" || result3.ok !== true) {
-    const message = typeof result3?.error === "string" ? result3.error : fallback;
-    throw new Error(message);
-  }
-  return result3.value;
-}
-function createAgentBackend(sessionId) {
-  const session = getAgentSession(sessionId);
-  const connection = getAgentConnectionInfo(session);
-  const downloadsDir = (() => {
-    const raw = process.env.OPENCODE_BROWSER_AGENT_DOWNLOADS_DIR?.trim();
-    if (!raw)
-      return DEFAULT_DOWNLOADS_DIR;
-    return isAbsolute(raw) ? raw : resolve2(process.cwd(), raw);
-  })();
-  mkdirSync(downloadsDir, { recursive: true });
-  const downloads = [];
-  function resolveDownloadPath(filename, urlValue) {
-    let name = typeof filename === "string" ? filename.trim() : "";
-    if (!name && typeof urlValue === "string") {
-      try {
-        const u = new URL(urlValue);
-        name = basename(u.pathname) || "";
-      } catch {}
-    }
-    if (!name)
-      name = `download-${Date.now()}`;
-    const fullPath = isAbsolute(name) ? name : join2(downloadsDir, name);
-    mkdirSync(dirname(fullPath), { recursive: true });
-    return fullPath;
-  }
-  function recordDownload(entry) {
-    downloads.unshift({ ...entry, timestamp: new Date().toISOString() });
-    if (downloads.length > 50)
-      downloads.length = 50;
-  }
-  let agentSocket = null;
-  let agentReqId = 0;
-  const agentPending = new Map;
-  async function connectToAgent() {
-    return await new Promise((resolve3, reject) => {
-      const socket = connection.type === "unix" ? net.createConnection(connection.path) : net.createConnection({ host: connection.host, port: connection.port });
-      socket.once("connect", () => resolve3(socket));
-      socket.once("error", (err) => reject(err));
-    });
-  }
-  async function ensureAgentSocket() {
-    if (agentSocket && !agentSocket.destroyed)
-      return agentSocket;
-    try {
-      agentSocket = await connectToAgent();
-    } catch {
-      await maybeStartAgentDaemon(connection, session);
-      for (let attempt = 0;attempt < 20; attempt++) {
-        await sleep3(100);
-        try {
-          agentSocket = await connectToAgent();
-          break;
-        } catch {}
-      }
-    }
-    if (!agentSocket || agentSocket.destroyed) {
-      const target = connection.type === "unix" ? connection.path : `${connection.host}:${connection.port}`;
-      throw new Error(`Could not connect to agent-browser daemon at ${target}.`);
-    }
-    agentSocket.setNoDelay(true);
-    agentSocket.on("data", createJsonLineParser((msg) => {
-      if (!msg || msg.id === undefined)
-        return;
-      const messageId = typeof msg.id === "string" ? msg.id : String(msg.id);
-      const pending = agentPending.get(messageId);
-      if (!pending)
-        return;
-      agentPending.delete(messageId);
-      const res = msg;
-      if (!res.success)
-        pending.reject(new Error(res.error || "Agent browser error"));
-      else
-        pending.resolve(res.data);
-    }));
-    agentSocket.on("close", () => {
-      for (const pending of agentPending.values()) {
-        pending.reject(new Error("Agent browser connection closed"));
-      }
-      agentPending.clear();
-      agentSocket = null;
-    });
-    agentSocket.on("error", () => {
-      agentSocket = null;
-    });
-    return agentSocket;
-  }
-  async function agentRequest(action, payload) {
-    const socket = await ensureAgentSocket();
-    const id2 = `a${++agentReqId}`;
-    return await new Promise((resolve3, reject) => {
-      agentPending.set(id2, { resolve: resolve3, reject });
-      writeJsonLine(socket, { id: id2, action, ...payload });
-      setTimeout(() => {
-        if (!agentPending.has(id2))
-          return;
-        agentPending.delete(id2);
-        reject(new Error("Timed out waiting for agent-browser response"));
-      }, REQUEST_TIMEOUT_MS);
-    });
-  }
-  async function agentCommand(action, payload) {
-    return await agentRequest(action, payload);
-  }
-  async function withTab(tabId, action) {
-    if (!Number.isFinite(tabId))
-      return await action();
-    await agentCommand("tab_switch", { index: tabId });
-    return await action();
-  }
-  async function agentEvaluate(script) {
-    const data = await agentCommand("evaluate", { script });
-    return data?.result;
-  }
-  async function waitForCount(selector, minimum, timeoutMs, pollMs) {
-    const timeout3 = Math.max(0, timeoutMs);
-    const poll = Math.max(0, pollMs || DEFAULT_POLL_MS);
-    const start = Date.now();
-    while (true) {
-      const data = await agentCommand("count", { selector });
-      const count = Number(data?.count ?? 0);
-      if (count >= minimum)
-        return count;
-      if (!timeout3 || Date.now() - start >= timeout3)
-        return count;
-      await sleep3(poll);
-    }
-  }
-  async function agentQuery(args2) {
-    const selector = typeof args2.selector === "string" ? args2.selector : undefined;
-    const mode = typeof args2.mode === "string" && args2.mode ? args2.mode : "text";
-    const indexValue = Number.isFinite(args2.index) ? args2.index : 0;
-    const limitValue = Number.isFinite(args2.limit) ? args2.limit : mode === "page_text" ? DEFAULT_PAGE_TEXT_LIMIT : DEFAULT_LIST_LIMIT;
-    const timeoutValue = Number.isFinite(args2.timeoutMs) ? args2.timeoutMs : 0;
-    const pollValue = Number.isFinite(args2.pollMs) ? args2.pollMs : DEFAULT_POLL_MS;
-    const pattern = typeof args2.pattern === "string" ? args2.pattern : null;
-    const flags = typeof args2.flags === "string" ? args2.flags : "i";
-    if (mode === "page_text") {
-      if (selector && timeoutValue > 0) {
-        await waitForCount(selector, 1, timeoutValue, pollValue);
-      }
-      const pageText = await agentEvaluate(buildAgentPageTextScript(limitValue, pattern, flags));
-      return { content: JSON.stringify({ ok: true, value: pageText }, null, 2) };
-    }
-    if (!selector)
-      throw new Error("selector is required");
-    if (mode === "exists") {
-      const count2 = await waitForCount(selector, 1, timeoutValue, pollValue);
-      return {
-        content: JSON.stringify({ ok: true, value: { exists: count2 > 0, count: count2 } }, null, 2)
-      };
-    }
-    const count = await waitForCount(selector, indexValue + 1, timeoutValue, pollValue);
-    if (count <= indexValue) {
-      throw new Error(`No matches for selector: ${selector}`);
-    }
-    if (mode === "text") {
-      const data = indexValue > 0 ? await agentCommand("nth", { selector, index: indexValue, subaction: "text" }) : await agentCommand("innertext", { selector });
-      return { content: typeof data?.text === "string" ? data.text : "" };
-    }
-    if (mode === "value") {
-      if (indexValue > 0) {
-        const result3 = ensureEvalResult(await agentEvaluate(buildAgentNthValueScript(selector, indexValue)), "Value lookup failed");
-        return { content: typeof result3 === "string" ? result3 : JSON.stringify(result3) };
-      }
-      const data = await agentCommand("inputvalue", { selector });
-      return { content: typeof data?.value === "string" ? data.value : "" };
-    }
-    if (mode === "attribute") {
-      if (!args2.attribute)
-        throw new Error("attribute is required");
-      if (indexValue > 0) {
-        const result3 = ensureEvalResult(await agentEvaluate(buildAgentNthAttributeScript(selector, indexValue, args2.attribute)), "Attribute lookup failed");
-        return { content: typeof result3 === "string" ? result3 : JSON.stringify(result3) };
-      }
-      const data = await agentCommand("getattribute", { selector, attribute: args2.attribute });
-      return { content: typeof data?.value === "string" ? data.value : JSON.stringify(data?.value) };
-    }
-    if (mode === "property") {
-      if (!args2.property)
-        throw new Error("property is required");
-      const result3 = ensureEvalResult(await agentEvaluate(buildAgentNthPropertyScript(selector, indexValue, args2.property)), "Property lookup failed");
-      return { content: typeof result3 === "string" ? result3 : JSON.stringify(result3) };
-    }
-    if (mode === "html") {
-      const result3 = ensureEvalResult(await agentEvaluate(buildAgentOuterHtmlScript(selector, indexValue)), "HTML lookup failed");
-      return { content: typeof result3 === "string" ? result3 : JSON.stringify(result3) };
-    }
-    if (mode === "list") {
-      const listResult = ensureEvalResult(await agentEvaluate(buildAgentListScript(selector, limitValue)), "List lookup failed");
-      return { content: JSON.stringify({ ok: true, value: listResult }, null, 2) };
-    }
-    throw new Error(`Unknown mode: ${mode}`);
-  }
-  async function requestTool(tool, args2) {
-    switch (tool) {
-      case "get_tabs": {
-        const data = await agentCommand("tab_list", {});
-        const tabs = Array.isArray(data?.tabs) ? data.tabs : [];
-        const mapped = tabs.map((tab) => ({
-          id: tab.index,
-          url: tab.url,
-          title: tab.title,
-          active: tab.active,
-          windowId: tab.windowId ?? 0
-        }));
-        return { content: JSON.stringify(mapped, null, 2) };
-      }
-      case "list_downloads": {
-        return { content: JSON.stringify({ downloads }, null, 2) };
-      }
-      case "open_tab": {
-        const active = args2.active;
-        let previousActive = null;
-        if (active === false) {
-          const list = await agentCommand("tab_list", {});
-          if (Number.isFinite(list?.active))
-            previousActive = list.active;
-        }
-        const created = await agentCommand("tab_new", {});
-        if (args2.url) {
-          await agentCommand("navigate", { url: args2.url });
-        }
-        if (active === false && previousActive !== null) {
-          await agentCommand("tab_switch", { index: previousActive });
-        }
-        return { content: { tabId: created.index, url: args2.url, active: active !== false } };
-      }
-      case "close_tab": {
-        const payload = {};
-        if (Number.isFinite(args2.tabId))
-          payload.index = args2.tabId;
-        const result3 = await agentCommand("tab_close", payload);
-        const closed = Number.isFinite(result3?.closed) ? result3.closed : args2.tabId;
-        return { content: { tabId: closed, remaining: result3?.remaining } };
-      }
-      case "navigate": {
-        return await withTab(args2.tabId, async () => {
-          if (!args2.url)
-            throw new Error("URL is required");
-          await agentCommand("navigate", { url: args2.url });
-          return { content: `Navigated to ${args2.url}` };
-        });
-      }
-      case "download": {
-        return await withTab(args2.tabId, async () => {
-          const url = typeof args2.url === "string" ? args2.url.trim() : "";
-          const selector = typeof args2.selector === "string" ? args2.selector.trim() : "";
-          const filename = typeof args2.filename === "string" ? args2.filename.trim() : "";
-          const waitValue = args2.wait === undefined ? false : !!args2.wait;
-          const timeoutValue = Number.isFinite(args2.downloadTimeoutMs) ? args2.downloadTimeoutMs : undefined;
-          if (!url && !selector)
-            throw new Error("url or selector is required");
-          if (url && selector)
-            throw new Error("Provide either url or selector, not both");
-          if (!waitValue) {
-            if (selector) {
-              await agentCommand("click", { selector });
-              return { content: JSON.stringify({ ok: true, started: true, selector }, null, 2) };
-            }
-            await agentCommand("navigate", { url });
-            return { content: JSON.stringify({ ok: true, started: true, url }, null, 2) };
-          }
-          if (selector) {
-            const path2 = resolveDownloadPath(filename || undefined);
-            const data2 = await agentCommand("download", { selector, path: path2 });
-            const entry2 = {
-              path: String(data2?.path || path2),
-              filename: typeof data2?.suggestedFilename === "string" ? data2.suggestedFilename : undefined,
-              url: url || undefined
-            };
-            recordDownload({ path: entry2.path, filename: entry2.filename, url: entry2.url });
-            return { content: JSON.stringify({ ok: true, ...entry2 }, null, 2) };
-          }
-          const path = resolveDownloadPath(filename || undefined, url);
-          await agentCommand("navigate", { url });
-          const data = await agentCommand("waitfordownload", { path, timeout: timeoutValue });
-          const entry = {
-            path: String(data?.path || path),
-            filename: typeof data?.filename === "string" ? data.filename : undefined,
-            url: typeof data?.url === "string" ? data.url : url
-          };
-          recordDownload({ path: entry.path, filename: entry.filename, url: entry.url });
-          return { content: JSON.stringify({ ok: true, ...entry }, null, 2) };
-        });
-      }
-      case "click": {
-        return await withTab(args2.tabId, async () => {
-          if (!args2.selector)
-            throw new Error("Selector is required");
-          const indexValue = Number.isFinite(args2.index) ? args2.index : 0;
-          if (indexValue) {
-            await agentCommand("nth", { selector: args2.selector, index: indexValue, subaction: "click" });
-          } else {
-            await agentCommand("click", { selector: args2.selector });
-          }
-          return { content: `Clicked ${args2.selector}` };
-        });
-      }
-      case "type": {
-        return await withTab(args2.tabId, async () => {
-          if (!args2.selector)
-            throw new Error("Selector is required");
-          if (args2.text === undefined)
-            throw new Error("Text is required");
-          const indexValue = Number.isFinite(args2.index) ? args2.index : 0;
-          if (!indexValue) {
-            await agentCommand("type", {
-              selector: args2.selector,
-              text: String(args2.text),
-              clear: args2.clear
-            });
-          } else {
-            const result3 = await agentEvaluate(buildAgentTypeScript(args2.selector, indexValue, String(args2.text), !!args2.clear));
-            if (!result3?.ok) {
-              throw new Error(result3?.error || "Type failed");
-            }
-          }
-          return { content: `Typed "${args2.text}" into ${args2.selector}` };
-        });
-      }
-      case "select": {
-        return await withTab(args2.tabId, async () => {
-          if (!args2.selector)
-            throw new Error("Selector is required");
-          if (args2.value === undefined && args2.label === undefined && args2.optionIndex === undefined) {
-            throw new Error("value, label, or optionIndex is required");
-          }
-          const indexValue = Number.isFinite(args2.index) ? args2.index : 0;
-          let selectedValue = args2.value;
-          let selectedLabel = args2.label;
-          if (indexValue || args2.label !== undefined || args2.optionIndex !== undefined) {
-            const result3 = await agentEvaluate(buildAgentSelectScript(args2.selector, indexValue, args2.value, args2.label, args2.optionIndex));
-            if (!result3?.ok) {
-              throw new Error(result3?.error || "Select failed");
-            }
-            selectedValue = result3.value;
-            selectedLabel = result3.label;
-          } else if (args2.value !== undefined) {
-            await agentCommand("select", { selector: args2.selector, values: args2.value });
-          }
-          const valueText = selectedValue ? String(selectedValue) : "";
-          const labelText = selectedLabel ? String(selectedLabel) : "";
-          const summary = labelText && valueText && labelText !== valueText ? `${labelText} (${valueText})` : labelText || valueText || "option";
-          return { content: `Selected ${summary} in ${args2.selector}` };
-        });
-      }
-      case "set_file_input": {
-        return await withTab(args2.tabId, async () => {
-          if (!args2.selector)
-            throw new Error("Selector is required");
-          if (!args2.filePath)
-            throw new Error("filePath is required");
-          const rawPath = String(args2.filePath).trim();
-          if (!rawPath)
-            throw new Error("filePath is required");
-          const absPath = isAbsolute(rawPath) ? rawPath : resolve2(process.cwd(), rawPath);
-          const data = await agentCommand("upload", { selector: args2.selector, files: absPath });
-          return {
-            content: JSON.stringify({ ok: true, selector: args2.selector, uploaded: data?.uploaded ?? [absPath] }, null, 2)
-          };
-        });
-      }
-      case "screenshot": {
-        return await withTab(args2.tabId, async () => {
-          const data = await agentCommand("screenshot", { format: "png" });
-          const base642 = data?.base64 ? String(data.base64) : "";
-          if (!base642)
-            throw new Error("Screenshot failed");
-          return { content: `data:image/png;base64,${base642}` };
-        });
-      }
-      case "snapshot": {
-        return await withTab(args2.tabId, async () => {
-          const data = await agentCommand("snapshot", {});
-          const payload = {
-            snapshot: data?.snapshot ?? "",
-            refs: data?.refs ?? {}
-          };
-          return { content: JSON.stringify(payload, null, 2) };
-        });
-      }
-      case "query": {
-        return await withTab(args2.tabId, async () => {
-          return await agentQuery(args2);
-        });
-      }
-      case "scroll": {
-        return await withTab(args2.tabId, async () => {
-          const x = Number.isFinite(args2.x) ? args2.x : 0;
-          const y = Number.isFinite(args2.y) ? args2.y : 0;
-          await agentCommand("scroll", {
-            selector: args2.selector,
-            x,
-            y
-          });
-          const target = args2.selector ? `to ${args2.selector}` : `by (${x}, ${y})`;
-          return { content: `Scrolled ${target}` };
-        });
-      }
-      case "wait": {
-        return await withTab(args2.tabId, async () => {
-          const ms = Number.isFinite(args2.ms) ? args2.ms : 1000;
-          await agentCommand("wait", { timeout: ms });
-          return { content: `Waited ${ms}ms` };
-        });
-      }
-      default:
-        throw new Error(`Unsupported tool for agent backend: ${tool}`);
-    }
-  }
-  async function status() {
-    let connected = false;
-    let error;
-    try {
-      await ensureAgentSocket();
-      connected = true;
-    } catch (err) {
-      error = err instanceof Error ? err.message : String(err);
-    }
-    return {
-      backend: "agent-browser",
-      session,
-      connection,
-      connected,
-      error,
-      agentBrowserVersion: getAgentPackageVersion()
-    };
-  }
-  return {
-    mode: "agent",
-    session,
-    connection,
-    getVersion: getAgentPackageVersion,
-    status,
-    requestTool
-  };
-}
-
-// src/plugin.ts
-import { appendFileSync, existsSync, mkdirSync as mkdirSync2, readFileSync as readFileSync2, statSync } from "fs";
-import { homedir as homedir2, userInfo } from "os";
-import { basename as basename2, dirname as dirname2, isAbsolute as isAbsolute2, join as join3, resolve as resolve3 } from "path";
-import { execSync, spawn as spawn2 } from "child_process";
-import { fileURLToPath } from "url";
-var __filename2 = fileURLToPath(import.meta.url);
-var __dirname2 = dirname2(__filename2);
-var PACKAGE_JSON_PATH = join3(__dirname2, "..", "package.json");
-var cachedVersion = null;
-function getPackageVersion() {
-  if (cachedVersion)
-    return cachedVersion;
-  try {
-    const pkg = JSON.parse(readFileSync2(PACKAGE_JSON_PATH, "utf8"));
-    if (typeof pkg?.version === "string") {
-      cachedVersion = pkg.version;
-      return cachedVersion;
-    }
-  } catch {}
-  cachedVersion = "unknown";
-  return cachedVersion;
-}
-var BASE_DIR2 = join3(homedir2(), ".opencode-browser");
-var SOCKET_PATH = getBrokerSocketPath();
-var LOG_PATH = join3(BASE_DIR2, "plugin.log");
-function getSafePipeName() {
-  try {
-    const username = userInfo().username || "user";
-    return `opencode-browser-${username}`.replace(/[^a-zA-Z0-9._-]/g, "_");
-  } catch {
-    return "opencode-browser";
-  }
-}
-function getBrokerSocketPath() {
-  const override = process.env.OPENCODE_BROWSER_BROKER_SOCKET;
-  if (override)
-    return override;
-  if (process.platform === "win32")
-    return `\\\\.\\pipe\\${getSafePipeName()}`;
-  return join3(BASE_DIR2, "broker.sock");
-}
-mkdirSync2(BASE_DIR2, { recursive: true });
-function logDebug2(message) {
-  try {
-    appendFileSync(LOG_PATH, `[${new Date().toISOString()}] ${message}
-`, "utf8");
-  } catch {}
-}
-logDebug2(`plugin loaded v${getPackageVersion()} pid=${process.pid} socket=${SOCKET_PATH}`);
-var DEFAULT_MAX_UPLOAD_BYTES = 512 * 1024;
-var MAX_UPLOAD_BYTES = (() => {
-  const raw = process.env.OPENCODE_BROWSER_MAX_UPLOAD_BYTES;
-  const value3 = raw ? Number(raw) : NaN;
-  if (Number.isFinite(value3) && value3 > 0)
-    return value3;
-  return DEFAULT_MAX_UPLOAD_BYTES;
-})();
-function resolveUploadPath(filePath) {
-  const trimmed = typeof filePath === "string" ? filePath.trim() : "";
-  if (!trimmed)
-    throw new Error("filePath is required");
-  return isAbsolute2(trimmed) ? trimmed : resolve3(process.cwd(), trimmed);
-}
-function buildFileUploadPayload(filePath, fileName, mimeType) {
-  const absPath = resolveUploadPath(filePath);
-  const stats = statSync(absPath);
-  if (!stats.isFile())
-    throw new Error(`Not a file: ${absPath}`);
-  if (stats.size > MAX_UPLOAD_BYTES) {
-    throw new Error(`File too large (${stats.size} bytes). Max is ${MAX_UPLOAD_BYTES} bytes (OPENCODE_BROWSER_MAX_UPLOAD_BYTES). ` + `For larger uploads, use OPENCODE_BROWSER_BACKEND=agent.`);
-  }
-  const base642 = readFileSync2(absPath).toString("base64");
-  const name = typeof fileName === "string" && fileName.trim() ? fileName.trim() : basename2(absPath);
-  const mt = typeof mimeType === "string" && mimeType.trim() ? mimeType.trim() : undefined;
-  return { name, mimeType: mt, base64: base642 };
-}
-function createJsonLineParser2(onMessage) {
-  let buffer = "";
-  return (chunk) => {
-    buffer += chunk.toString("utf8");
-    while (true) {
-      const idx = buffer.indexOf(`
-`);
-      if (idx === -1)
-        return;
-      const line = buffer.slice(0, idx);
-      buffer = buffer.slice(idx + 1);
-      if (!line.trim())
-        continue;
-      try {
-        onMessage(JSON.parse(line));
-      } catch {}
-    }
-  };
-}
-function writeJsonLine2(socket, msg) {
-  socket.write(JSON.stringify(msg) + `
-`);
-}
 function resolveRuntime() {
   const candidates = [];
   if (process.env.OPENCODE_BROWSER_NODE)
     candidates.push(process.env.OPENCODE_BROWSER_NODE);
   try {
-    const cfg = JSON.parse(readFileSync2(join3(BASE_DIR2, "config.json"), "utf8"));
+    const cfg = JSON.parse(readFileSync(join2(BASE_DIR, "config.json"), "utf8"));
     if (typeof cfg?.nodePath === "string")
       candidates.push(cfg.nodePath);
   } catch {}
@@ -29948,25 +29171,25 @@ function resolveRuntime() {
   for (const candidate of candidates) {
     if (!candidate)
       continue;
-    const name = basename2(candidate).toLowerCase();
+    const name = basename(candidate).toLowerCase();
     if (name.startsWith("node") || name.startsWith("bun"))
       return candidate;
   }
   return process.execPath;
 }
 function maybeStartBroker() {
-  const brokerPath = join3(BASE_DIR2, "broker.cjs");
+  const brokerPath = join2(BASE_DIR, "broker.cjs");
   if (!existsSync(brokerPath))
     return;
   try {
-    const child = spawn2(resolveRuntime(), [brokerPath], { detached: true, stdio: "ignore" });
+    const child = spawn(resolveRuntime(), [brokerPath], { detached: true, stdio: "ignore" });
     child.unref();
   } catch {}
 }
 async function connectToBroker() {
-  return await new Promise((resolve4, reject) => {
-    const socket = net2.createConnection(SOCKET_PATH);
-    socket.once("connect", () => resolve4(socket));
+  return await new Promise((resolve3, reject) => {
+    const socket = net.createConnection(SOCKET_PATH);
+    socket.once("connect", () => resolve3(socket));
     socket.once("error", (err) => {
       lastBrokerError = err instanceof Error ? err : new Error(String(err));
       logDebug2(`broker connect error socket=${SOCKET_PATH} error=${lastBrokerError.message}`);
@@ -29974,17 +29197,14 @@ async function connectToBroker() {
     });
   });
 }
-async function sleep4(ms) {
+async function sleep3(ms) {
   return await new Promise((r) => setTimeout(r, ms));
 }
-var BACKEND_MODE = (process.env.OPENCODE_BROWSER_BACKEND ?? process.env.OPENCODE_BROWSER_MODE ?? "extension").toLowerCase().trim();
-var USE_AGENT_BACKEND = ["agent", "agent-browser", "agentbrowser"].includes(BACKEND_MODE);
 var socket = null;
 var lastBrokerError = null;
 var sessionId = Math.random().toString(36).slice(2);
 var reqId = 0;
 var pending = new Map;
-var agentBackend = USE_AGENT_BACKEND ? createAgentBackend(sessionId) : null;
 async function ensureBrokerSocket() {
   if (socket && !socket.destroyed)
     return socket;
@@ -29993,7 +29213,7 @@ async function ensureBrokerSocket() {
   } catch {
     maybeStartBroker();
     for (let i = 0;i < 20; i++) {
-      await sleep4(100);
+      await sleep3(100);
       try {
         socket = await connectToBroker();
         break;
@@ -30006,7 +29226,7 @@ async function ensureBrokerSocket() {
   }
   socket.setNoDelay(true);
   logDebug2(`broker connected socket=${SOCKET_PATH}`);
-  socket.on("data", createJsonLineParser2((msg) => {
+  socket.on("data", createJsonLineParser((msg) => {
     if (msg?.type !== "response" || typeof msg.id !== "number")
       return;
     const p = pending.get(msg.id);
@@ -30025,15 +29245,15 @@ async function ensureBrokerSocket() {
   socket.on("error", () => {
     socket = null;
   });
-  writeJsonLine2(socket, { type: "hello", role: "plugin", sessionId, pid: process.pid });
+  writeJsonLine(socket, { type: "hello", role: "plugin", sessionId, pid: process.pid });
   return socket;
 }
 async function brokerRequest(op, payload) {
   const s = await ensureBrokerSocket();
   const id2 = ++reqId;
-  return await new Promise((resolve4, reject) => {
-    pending.set(id2, { resolve: resolve4, reject });
-    writeJsonLine2(s, { type: "request", id: id2, op, ...payload });
+  return await new Promise((resolve3, reject) => {
+    pending.set(id2, { resolve: resolve3, reject });
+    writeJsonLine(s, { type: "request", id: id2, op, ...payload });
     setTimeout(() => {
       if (!pending.has(id2))
         return;
@@ -30041,12 +29261,6 @@ async function brokerRequest(op, payload) {
       reject(new Error("Timed out waiting for broker response"));
     }, 60000);
   });
-}
-async function brokerOnlyRequest(op, payload) {
-  if (USE_AGENT_BACKEND) {
-    throw new Error("Tab claims are not supported with agent-browser backend");
-  }
-  return await brokerRequest(op, payload);
 }
 function toolResultText(data, fallback) {
   if (typeof data?.content === "string")
@@ -30058,25 +29272,9 @@ function toolResultText(data, fallback) {
   return fallback;
 }
 async function toolRequest(toolName, args2) {
-  if (USE_AGENT_BACKEND) {
-    if (!agentBackend) {
-      throw new Error("Agent backend unavailable: configuration failed to initialize");
-    }
-    return await agentBackend.requestTool(toolName, args2);
-  }
   return await brokerRequest("tool", { tool: toolName, args: args2 });
 }
 async function statusRequest() {
-  if (USE_AGENT_BACKEND) {
-    if (!agentBackend) {
-      return {
-        backend: "agent-browser",
-        connected: false,
-        error: "Agent backend unavailable: configuration failed to initialize"
-      };
-    }
-    return await agentBackend.status();
-  }
   return await brokerRequest("status", {});
 }
 function stringField() {
@@ -30111,11 +29309,8 @@ var browserTools = [
       "loaded: true",
       `sessionId: ${sessionId}`,
       `pid: ${process.pid}`,
-      `backend: ${USE_AGENT_BACKEND ? "agent-browser" : "extension"}`,
+      `backend: extension`,
       `brokerSocket: ${SOCKET_PATH}`,
-      `agentSession: ${agentBackend?.session ?? ""}`,
-      `agentConnection: ${JSON.stringify(agentBackend?.connection ?? null)}`,
-      `agentBrowserVersion: ${agentBackend?.getVersion?.() ?? ""}`,
       `pluginVersion: ${getPackageVersion()}`,
       `timestamp: ${new Date().toISOString()}`
     ];
@@ -30127,19 +29322,18 @@ var browserTools = [
     version: getPackageVersion(),
     sessionId,
     pid: process.pid,
-    backend: USE_AGENT_BACKEND ? "agent-browser" : "extension",
-    agentBrowserVersion: agentBackend?.getVersion?.() ?? null
+    backend: "extension"
   })),
   browserTool("browser_status", "Check backend connection status and current tab claims.", {}, async () => JSON.stringify(await statusRequest())),
   browserTool("browser_get_tabs", "List all open browser tabs", {}, async () => toolResultText(await toolRequest("get_tabs", {}), "ok")),
-  browserTool("browser_list_claims", "List tab ownership claims", {}, async () => JSON.stringify(await brokerOnlyRequest("list_claims", {}))),
+  browserTool("browser_list_claims", "List tab ownership claims", {}, async () => JSON.stringify(await brokerRequest("list_claims", {}))),
   browserTool("browser_claim_tab", "Claim a browser tab for this session", {
     tabId: numberField(),
     force: booleanField()
-  }, async ({ tabId, force }) => JSON.stringify(await brokerOnlyRequest("claim_tab", { tabId, force })), ["tabId"]),
+  }, async ({ tabId, force }) => JSON.stringify(await brokerRequest("claim_tab", { tabId, force })), ["tabId"]),
   browserTool("browser_release_tab", "Release a claimed browser tab", {
     tabId: numberField()
-  }, async ({ tabId }) => JSON.stringify(await brokerOnlyRequest("release_tab", { tabId })), ["tabId"]),
+  }, async ({ tabId }) => JSON.stringify(await brokerRequest("release_tab", { tabId })), ["tabId"]),
   browserTool("browser_open_tab", "Open a new browser tab", {
     url: stringField(),
     active: booleanField()
@@ -30224,7 +29418,7 @@ var browserTools = [
     timeoutMs: numberField(),
     pollMs: numberField()
   }, async ({ url, selector, filename, conflictAction, saveAs, wait, downloadTimeoutMs, index: index2, tabId, timeoutMs, pollMs }) => toolResultText(await toolRequest("download", { url, selector, filename, conflictAction, saveAs, wait, downloadTimeoutMs, index: index2, tabId, timeoutMs, pollMs }), "Download started")),
-  browserTool("browser_list_downloads", "List recent downloads (Chrome backend) or session downloads (agent backend).", {
+  browserTool("browser_list_downloads", "List recent downloads.", {
     limit: numberField(),
     state: stringField()
   }, async ({ limit, state }) => toolResultText(await toolRequest("list_downloads", { limit, state }), "[]")),
@@ -30238,8 +29432,6 @@ var browserTools = [
     timeoutMs: numberField(),
     pollMs: numberField()
   }, async ({ selector, filePath, fileName, mimeType, index: index2, tabId, timeoutMs, pollMs }) => {
-    if (USE_AGENT_BACKEND)
-      return toolResultText(await toolRequest("set_file_input", { selector, filePath, tabId, index: index2, timeoutMs, pollMs }), "Set file input");
     const file = buildFileUploadPayload(filePath, fileName, mimeType);
     return toolResultText(await toolRequest("set_file_input", { selector, tabId, index: index2, timeoutMs, pollMs, files: [file] }), "Set file input");
   }, ["selector", "filePath"]),

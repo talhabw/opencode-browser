@@ -2,7 +2,7 @@
 /**
  * OpenCode Browser - CLI
  *
- * Architecture (v4):
+ * Architecture (v5):
  *   OpenCode Plugin <-> Local Broker (unix socket) <-> Native Messaging Host <-> Chrome Extension
  *
  * Commands:
@@ -26,7 +26,7 @@ import { join, dirname } from "path";
 import { fileURLToPath, pathToFileURL } from "url";
 import { createInterface } from "readline";
 import { createConnection } from "net";
-import { execSync, spawn, spawnSync } from "child_process";
+import { execSync, spawnSync } from "child_process";
 import { createHash } from "crypto";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -446,14 +446,25 @@ async function loadPluginTools() {
   }
 
   const mod = await import(pathToFileURL(pluginPath).href);
-  const factory = mod?.default;
-  if (typeof factory !== "function") {
-    throw new Error("Could not load plugin factory from dist/plugin.js");
+  const plugin = mod?.default;
+  if (!plugin || typeof plugin.setup !== "function") {
+    throw new Error("Could not load plugin from dist/plugin.js");
   }
 
-  const pluginInstance = await factory({});
-  const tools = pluginInstance?.tool;
-  if (!tools || typeof tools !== "object") {
+  const tools = {};
+  await plugin.setup({
+    tool: {
+      transform: async (cb) => {
+        await cb({
+          add: (t) => {
+            tools[t.name] = t;
+          },
+        });
+      },
+    },
+  });
+
+  if (!Object.keys(tools).length) {
     throw new Error("Plugin did not expose any tools");
   }
   return tools;
@@ -496,7 +507,8 @@ async function executeTool(toolName, args = {}) {
     throw new Error(`Unknown tool: ${toolName}. Available: ${available}`);
   }
 
-  return await tool.execute(args, {});
+  const result = await tool.execute(args, {});
+  return result?.content ?? result;
 }
 
 async function listTools() {
@@ -561,7 +573,7 @@ async function selfTest() {
   if (!Number.isFinite(tabId)) {
     throw new Error("Failed to read tabId from browser_open_tab output");
   }
-  await executeTool("browser_wait", { ms: 250 });
+  await executeTool("browser_wait", { ms: 2500 });
 
   const beforeRaw = await executeTool("browser_query", {
     selector: "[role='listbox']",
@@ -574,7 +586,7 @@ async function selfTest() {
   await executeTool("browser_click", {
     selector: "text:Neptunium",
     tabId,
-    timeoutMs: 3000,
+    timeoutMs: 8000,
     pollMs: 150,
   });
 
@@ -616,7 +628,7 @@ async function main() {
   const command = process.argv[2];
 
   console.log(`
-${color("cyan", color("bright", "OpenCode Browser v4"))}
+${color("cyan", color("bright", "OpenCode Browser v5"))}
 ${color("cyan", "Browser automation plugin (native messaging + per-tab ownership)")}
 `);
 
@@ -634,10 +646,6 @@ ${color("cyan", "Browser automation plugin (native messaging + per-tab ownership
     await uninstall();
   } else if (command === "status") {
     await status();
-  } else if (command === "agent-install") {
-    await agentInstall();
-  } else if (command === "agent-gateway") {
-    await agentGateway();
   } else {
     log(`
 ${color("bright", "Usage:")}
@@ -648,8 +656,6 @@ ${color("bright", "Usage:")}
   npx @different-ai/opencode-browser tools
   npx @different-ai/opencode-browser tool <toolName> [argsJson]
   npx @different-ai/opencode-browser self-test
-  npx @different-ai/opencode-browser agent-install
-  npx @different-ai/opencode-browser agent-gateway
 
 ${color("bright", "Options:")}
   --extension-id <id> (or OPENCODE_BROWSER_EXTENSION_ID)
@@ -659,11 +665,6 @@ ${color("bright", "Quick Start:")}
   1. Run: npx @different-ai/opencode-browser install
   2. Restart OpenCode
   3. Use: browser_navigate / browser_click / browser_snapshot
-
-${color("bright", "Agent Mode:")}
-  1. Run: npx @different-ai/opencode-browser agent-install
-  2. Set OPENCODE_BROWSER_BACKEND=agent
-  3. Optionally run: npx @different-ai/opencode-browser agent-gateway
 `);
   }
 
@@ -1129,31 +1130,6 @@ async function status() {
   } else {
     warn(`Broker status: ${brokerStatus.error || "unavailable"}`);
   }
-}
-
-async function agentInstall() {
-  header("Agent Browser Install");
-
-  const extraArgs = process.argv.slice(3).join(" ");
-  const command = `npx agent-browser install ${extraArgs}`.trim();
-  try {
-    execSync(command, { stdio: "inherit" });
-    success("agent-browser install completed.");
-  } catch (err) {
-    error(`agent-browser install failed: ${err?.message || err}`);
-  }
-}
-
-async function agentGateway() {
-  header("Agent Browser Gateway");
-
-  const gatewayPath = join(PACKAGE_ROOT, "bin", "agent-gateway.cjs");
-  success(`Starting gateway: ${gatewayPath}`);
-
-  await new Promise((resolve) => {
-    const child = spawn(process.execPath, [gatewayPath], { stdio: "inherit" });
-    child.on("exit", resolve);
-  });
 }
 
 async function uninstall() {

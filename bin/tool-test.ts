@@ -15,8 +15,18 @@ if (rawArgs) {
 }
 
 try {
-  const pluginInstance = await (plugin as any)({});
-  const tool = pluginInstance?.tool?.[toolName];
+  const tools = new Map();
+  await plugin.setup({
+    tool: {
+      transform: async (cb) => {
+        await cb({
+          add: (t) => tools.set(t.name, t),
+        });
+      },
+    },
+  });
+
+  const tool = tools.get(toolName);
   if (!tool) {
     console.error(`Tool not found: ${toolName}`);
     process.exit(1);

@@ -1,6 +1,6 @@
 {
   "name": "@talhabw/opencode-browser",
-  "version": "4.6.1",
+  "version": "5.0.0",
   "description": "Browser automation plugin for OpenCode (native messaging + per-tab ownership).",
   "type": "module",
   "bin": {
@@ -50,8 +50,7 @@
   },
   "homepage": "https://github.com/talhabw/opencode-browser#readme",
   "dependencies": {
-    "@opencode-ai/plugin": "next",
-    "agent-browser": "^0.4.0"
+    "@opencode-ai/plugin": "next"
   },
   "devDependencies": {
     "bun-types": "*"

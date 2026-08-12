@@ -111,47 +111,6 @@ OpenCode Plugin <-> Local Broker (unix socket) <-> Native Host <-> Chrome Extens
 - The plugin talks to the broker over a local unix socket.
 - The broker forwards tool requests to the extension and enforces tab ownership.
 
-## Agent Browser mode (alpha)
-
-This branch adds an alternate backend powered by `agent-browser` (Playwright). It runs headless and does **not** reuse your existing Chrome profile.
-
-### Enable locally
-
-1. Install `agent-browser` and Chromium:
-
-```bash
-npm install -g agent-browser
-agent-browser install
-```
-
-2. Set the backend mode:
-
-```bash
-export OPENCODE_BROWSER_BACKEND=agent
-```
-
-Optional overrides:
-- `OPENCODE_BROWSER_AGENT_SESSION` (custom session name)
-- `OPENCODE_BROWSER_AGENT_SOCKET` (unix socket path)
-- `OPENCODE_BROWSER_AGENT_AUTOSTART=0` (disable auto-start)
-- `OPENCODE_BROWSER_AGENT_DAEMON` (explicit daemon path)
-
-### Tailnet/remote host
-
-On the host (e.g., `home-server.taild435d7.ts.net`), run the TCP gateway:
-
-```bash
-OPENCODE_BROWSER_AGENT_GATEWAY_PORT=9833 node bin/agent-gateway.cjs
-```
-
-On the client:
-
-```bash
-export OPENCODE_BROWSER_BACKEND=agent
-export OPENCODE_BROWSER_AGENT_HOST=home-server.taild435d7.ts.net
-export OPENCODE_BROWSER_AGENT_PORT=9833
-```
-
 ## Per-tab ownership
 
 - Each session owns its own tabs; tabs are never shared between sessions.
@@ -183,7 +142,7 @@ Downloads:
 - `browser_list_downloads`
 
 Uploads:
-- `browser_set_file_input` (extension backend supports small files; use agent backend for larger uploads)
+- `browser_set_file_input` (files up to 512 KB by default; override with `OPENCODE_BROWSER_MAX_UPLOAD_BYTES`)
 
 Selector helpers (usable in `selector`):
 - `label:Mailing Address: City`
