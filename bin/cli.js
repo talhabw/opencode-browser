@@ -911,7 +911,7 @@ Format rules (summary):
 - name must match the directory and use: ^[a-z0-9]+(-[a-z0-9]+)*$
 `);
 
-  const skillName = "browser-automation";
+  const skillName = "opencode-browser";
   const skillSrc = join(PACKAGE_ROOT, ".opencode", "skill", skillName, "SKILL.md");
   const skillDstDir = join(process.cwd(), ".opencode", "skill", skillName);
   const skillDst = join(skillDstDir, "SKILL.md");

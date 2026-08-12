@@ -4,7 +4,7 @@ import { createAgentBackend, type AgentBackend } from "./agent-backend.js";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync } from "fs";
 import { homedir, userInfo } from "os";
 import { basename, dirname, isAbsolute, join, resolve } from "path";
-import { spawn } from "child_process";
+import { execSync, spawn } from "child_process";
 import { fileURLToPath } from "url";
 
 
@@ -122,12 +122,37 @@ function writeJsonLine(socket: net.Socket, msg: any): void {
   socket.write(JSON.stringify(msg) + "\n");
 }
 
+function resolveRuntime(): string | null {
+  const candidates: string[] = [];
+  if (process.env.OPENCODE_BROWSER_NODE) candidates.push(process.env.OPENCODE_BROWSER_NODE);
+  try {
+    const cfg = JSON.parse(readFileSync(join(BASE_DIR, "config.json"), "utf8"));
+    if (typeof cfg?.nodePath === "string") candidates.push(cfg.nodePath);
+  } catch {
+    // ignore
+  }
+  if (process.platform !== "win32") {
+    try {
+      candidates.push(execSync("which node", { stdio: ["ignore", "pipe", "ignore"] }).toString("utf8").trim());
+    } catch {
+      // ignore
+    }
+  }
+  candidates.push(process.execPath);
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    const name = basename(candidate).toLowerCase();
+    if (name.startsWith("node") || name.startsWith("bun")) return candidate;
+  }
+  return process.execPath;
+}
+
 function maybeStartBroker(): void {
   const brokerPath = join(BASE_DIR, "broker.cjs");
   if (!existsSync(brokerPath)) return;
 
   try {
-    const child = spawn(process.execPath, [brokerPath], { detached: true, stdio: "ignore" });
+    const child = spawn(resolveRuntime(), [brokerPath], { detached: true, stdio: "ignore" });
     child.unref();
   } catch {
     // ignore

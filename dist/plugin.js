@@ -29834,7 +29834,7 @@ function createAgentBackend(sessionId) {
 import { appendFileSync, existsSync, mkdirSync as mkdirSync2, readFileSync as readFileSync2, statSync } from "fs";
 import { homedir as homedir2, userInfo } from "os";
 import { basename as basename2, dirname as dirname2, isAbsolute as isAbsolute2, join as join3, resolve as resolve3 } from "path";
-import { spawn as spawn2 } from "child_process";
+import { execSync, spawn as spawn2 } from "child_process";
 import { fileURLToPath } from "url";
 var __filename2 = fileURLToPath(import.meta.url);
 var __dirname2 = dirname2(__filename2);
@@ -29930,12 +29930,36 @@ function writeJsonLine2(socket, msg) {
   socket.write(JSON.stringify(msg) + `
 `);
 }
+function resolveRuntime() {
+  const candidates = [];
+  if (process.env.OPENCODE_BROWSER_NODE)
+    candidates.push(process.env.OPENCODE_BROWSER_NODE);
+  try {
+    const cfg = JSON.parse(readFileSync2(join3(BASE_DIR2, "config.json"), "utf8"));
+    if (typeof cfg?.nodePath === "string")
+      candidates.push(cfg.nodePath);
+  } catch {}
+  if (process.platform !== "win32") {
+    try {
+      candidates.push(execSync("which node", { stdio: ["ignore", "pipe", "ignore"] }).toString("utf8").trim());
+    } catch {}
+  }
+  candidates.push(process.execPath);
+  for (const candidate of candidates) {
+    if (!candidate)
+      continue;
+    const name = basename2(candidate).toLowerCase();
+    if (name.startsWith("node") || name.startsWith("bun"))
+      return candidate;
+  }
+  return process.execPath;
+}
 function maybeStartBroker() {
   const brokerPath = join3(BASE_DIR2, "broker.cjs");
   if (!existsSync(brokerPath))
     return;
   try {
-    const child = spawn2(process.execPath, [brokerPath], { detached: true, stdio: "ignore" });
+    const child = spawn2(resolveRuntime(), [brokerPath], { detached: true, stdio: "ignore" });
     child.unref();
   } catch {}
 }
