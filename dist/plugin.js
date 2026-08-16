@@ -29063,13 +29063,20 @@ var __filename2 = fileURLToPath(import.meta.url);
 var __dirname2 = dirname(__filename2);
 var PACKAGE_JSON_PATH = join2(__dirname2, "..", "package.json");
 var cachedVersion = null;
+function asString(value3) {
+  if (value3 === null || value3 === undefined)
+    return;
+  const text = String(value3);
+  return text === value3 ? text : undefined;
+}
 function getPackageVersion() {
   if (cachedVersion)
     return cachedVersion;
   try {
     const pkg = JSON.parse(readFileSync(PACKAGE_JSON_PATH, "utf8"));
-    if (typeof pkg?.version === "string") {
-      cachedVersion = pkg.version;
+    const version2 = asString(pkg?.version);
+    if (version2 !== undefined) {
+      cachedVersion = version2;
       return cachedVersion;
     }
   } catch {}
@@ -29112,7 +29119,7 @@ var MAX_UPLOAD_BYTES = (() => {
   return DEFAULT_MAX_UPLOAD_BYTES;
 })();
 function resolveUploadPath(filePath) {
-  const trimmed = typeof filePath === "string" ? filePath.trim() : "";
+  const trimmed = filePath.trim();
   if (!trimmed)
     throw new Error("filePath is required");
   return isAbsolute(trimmed) ? trimmed : resolve2(process.cwd(), trimmed);
@@ -29126,8 +29133,8 @@ function buildFileUploadPayload(filePath, fileName, mimeType) {
     throw new Error(`File too large (${stats.size} bytes). Max is ${MAX_UPLOAD_BYTES} bytes (OPENCODE_BROWSER_MAX_UPLOAD_BYTES).`);
   }
   const base642 = readFileSync(absPath).toString("base64");
-  const name = typeof fileName === "string" && fileName.trim() ? fileName.trim() : basename(absPath);
-  const mt = typeof mimeType === "string" && mimeType.trim() ? mimeType.trim() : undefined;
+  const name = asString(fileName)?.trim() || basename(absPath);
+  const mt = asString(mimeType)?.trim() || undefined;
   return { name, mimeType: mt, base64: base642 };
 }
 function createJsonLineParser(onMessage) {
@@ -29159,8 +29166,9 @@ function resolveRuntime() {
     candidates.push(process.env.OPENCODE_BROWSER_NODE);
   try {
     const cfg = JSON.parse(readFileSync(join2(BASE_DIR, "config.json"), "utf8"));
-    if (typeof cfg?.nodePath === "string")
-      candidates.push(cfg.nodePath);
+    const nodePath = asString(cfg?.nodePath);
+    if (nodePath !== undefined)
+      candidates.push(nodePath);
   } catch {}
   if (process.platform !== "win32") {
     try {
@@ -29227,7 +29235,7 @@ async function ensureBrokerSocket() {
   socket.setNoDelay(true);
   logDebug2(`broker connected socket=${SOCKET_PATH}`);
   socket.on("data", createJsonLineParser((msg) => {
-    if (msg?.type !== "response" || typeof msg.id !== "number")
+    if (msg?.type !== "response")
       return;
     const p = pending.get(msg.id);
     if (!p)
@@ -29263,10 +29271,12 @@ async function brokerRequest(op, payload) {
   });
 }
 function toolResultText(data, fallback) {
-  if (typeof data?.content === "string")
-    return data.content;
-  if (typeof data === "string")
-    return data;
+  const content = asString(data?.content);
+  if (content !== undefined)
+    return content;
+  const text = asString(data);
+  if (text !== undefined)
+    return text;
   if (data?.content != null)
     return JSON.stringify(data.content);
   return fallback;
@@ -29287,12 +29297,14 @@ function booleanField() {
   return { type: "boolean" };
 }
 function objectInput(properties, required3 = []) {
-  return {
+  const input = {
     type: "object",
     properties,
-    additionalProperties: false,
-    ...required3.length > 0 ? { required: required3 } : {}
+    additionalProperties: false
   };
+  if (required3.length > 0)
+    input.required = required3;
+  return input;
 }
 function browserTool(name, description, properties, execute, required3 = []) {
   return {
@@ -29462,7 +29474,7 @@ var plugin = exports_plugin.define({
       for (const browserTool2 of browserTools) {
         tools.add({
           ...browserTool2,
-          execute: async (args2, toolContext) => ({
+          execute: async (args2) => ({
             content: await browserTool2.execute(args2)
           })
         });

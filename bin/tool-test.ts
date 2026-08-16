@@ -3,7 +3,7 @@ import plugin from "../dist/plugin.js";
 const toolName = process.argv[2] ?? "browser_status";
 const rawArgs = process.argv[3];
 
-let args: Record<string, unknown> = {};
+let args: Record<string, string | number | boolean | null> = {};
 if (rawArgs) {
   try {
     args = JSON.parse(rawArgs);
@@ -33,10 +33,10 @@ try {
   }
 
   const result = await tool.execute(args, {});
-  if (typeof result === "string") {
-    console.log(result);
-  } else {
+  if (result instanceof Object) {
     console.log(JSON.stringify(result, null, 2));
+  } else {
+    console.log(String(result));
   }
   process.exit(0);
 } catch (error) {

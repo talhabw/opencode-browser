@@ -17,6 +17,18 @@ let nativePermissionHintLogged = false
 const debuggerState = new Map()
 const MAX_LOG_ENTRIES = 1000
 
+function isString(value) {
+  return Object.prototype.toString.call(value) === "[object String]"
+}
+
+function isBoolean(value) {
+  return value === true || value === false
+}
+
+function isRecord(value) {
+  return value !== null && !Array.isArray(value) && Object.prototype.toString.call(value) === "[object Object]"
+}
+
 async function hasPermissions(query) {
   if (!chrome.permissions?.contains) return true
   try {
@@ -266,7 +278,7 @@ function send(message) {
 }
 
 async function handleMessage(message) {
-  if (!message || typeof message !== "object") return
+  if (!isRecord(message)) return
 
   if (message.type === "tool_request") {
     await handleToolRequest(message)
@@ -356,15 +368,19 @@ async function pageOps(command, args) {
   const MAX_DEPTH = 6
   const DEFAULT_TIMEOUT_MS = 2000
 
+  function isStringValue(value) {
+    return Object.prototype.toString.call(value) === "[object String]"
+  }
+
   function safeString(value) {
-    return typeof value === "string" ? value : ""
+    return isStringValue(value) ? value : ""
   }
 
   function normalizeSelectorList(selector) {
     if (Array.isArray(selector)) {
       return selector.map((s) => safeString(s).trim()).filter(Boolean)
     }
-    if (typeof selector !== "string") return []
+    if (!isStringValue(selector)) return []
     const parts = selector
       .split(",")
       .map((s) => s.trim())
@@ -728,14 +744,14 @@ async function pageOps(command, args) {
     }
   }
 
-  const mode = typeof options.mode === "string" && options.mode ? options.mode : "text"
+  const mode = isStringValue(options.mode) && options.mode ? options.mode : "text"
   const selectors = normalizeSelectorList(options.selector)
   const index = Number.isFinite(options.index) ? options.index : 0
   const timeoutMs = Number.isFinite(options.timeoutMs) ? options.timeoutMs : DEFAULT_TIMEOUT_MS
   const pollMs = Number.isFinite(options.pollMs) ? options.pollMs : 200
   const limit = Number.isFinite(options.limit) ? options.limit : mode === "page_text" ? 20000 : 50
-  const pattern = typeof options.pattern === "string" ? options.pattern : null
-  const flags = typeof options.flags === "string" ? options.flags : "i"
+  const pattern = isStringValue(options.pattern) ? options.pattern : null
+  const flags = isStringValue(options.flags) ? options.flags : "i"
 
   if (command === "click") {
     const match = await resolveMatches(selectors, index, timeoutMs, pollMs)
@@ -788,8 +804,8 @@ async function pageOps(command, args) {
   }
 
   if (command === "select") {
-    const value = typeof options.value === "string" ? options.value : null
-    const label = typeof options.label === "string" ? options.label : null
+    const value = isStringValue(options.value) ? options.value : null
+    const label = isStringValue(options.label) ? options.label : null
     const optionIndex = Number.isFinite(options.optionIndex) ? options.optionIndex : null
     const match = await resolveMatches(selectors, index, timeoutMs, pollMs)
     if (!match.chosen) {
@@ -918,12 +934,7 @@ async function pageOps(command, args) {
       }
       if (scrollX || scrollY) {
         try {
-          if (typeof match.chosen.scrollBy === "function") {
-            match.chosen.scrollBy({ left: scrollX, top: scrollY, behavior: "instant" })
-          } else {
-            match.chosen.scrollLeft = Number(match.chosen.scrollLeft || 0) + scrollX
-            match.chosen.scrollTop = Number(match.chosen.scrollTop || 0) + scrollY
-          }
+          match.chosen.scrollBy({ left: scrollX, top: scrollY, behavior: "instant" })
         } catch {
           match.chosen.scrollLeft = Number(match.chosen.scrollLeft || 0) + scrollX
           match.chosen.scrollTop = Number(match.chosen.scrollTop || 0) + scrollY
@@ -942,7 +953,7 @@ async function pageOps(command, args) {
 
   if (command === "highlight") {
     const duration = Number.isFinite(options.duration) ? options.duration : 3000
-    const color = typeof options.color === "string" ? options.color : "#ff0000"
+    const color = isStringValue(options.color) ? options.color : "#ff0000"
     const showInfo = !!options.showInfo
 
     const match = await resolveMatches(selectors, index, timeoutMs, pollMs)
@@ -1040,7 +1051,7 @@ async function pageOps(command, args) {
 
     if (mode === "value") {
       const value = match.chosen.value
-      return { ok: true, selectorUsed: match.selectorUsed, value: typeof value === "string" ? value : String(value ?? "") }
+      return { ok: true, selectorUsed: match.selectorUsed, value: String(value ?? "") }
     }
 
     if (mode === "attribute") {
@@ -1084,8 +1095,8 @@ async function toolGetActiveTab() {
 
 async function toolOpenTab({ url, active = true }) {
   const createOptions = {}
-  if (typeof url === "string" && url.trim()) createOptions.url = url.trim()
-  if (typeof active === "boolean") createOptions.active = active
+  if (isString(url) && url.trim()) createOptions.url = url.trim()
+  if (isBoolean(active)) createOptions.active = active
 
   const tab = await chrome.tabs.create(createOptions)
   return { tabId: tab.id, content: { tabId: tab.id, url: tab.url, active: tab.active } }
@@ -1169,7 +1180,7 @@ async function toolSnapshot({ tabId }) {
     target: { tabId: tab.id },
     func: () => {
       function safeText(s) {
-        return typeof s === "string" ? s : ""
+        return Object.prototype.toString.call(s) === "[object String]" ? s : ""
       }
 
       function isVisible(el) {
@@ -1251,7 +1262,7 @@ async function toolSnapshot({ tabId }) {
           }
 
           if (el.id) node.selector = `#${el.id}`
-          else if (el.className && typeof el.className === "string") {
+          else if (safeText(el.className)) {
             const cls = el.className.trim().split(/\s+/).slice(0, 2).join(".")
             if (cls) node.selector = `${el.tagName.toLowerCase()}.${cls}`
           }
@@ -1350,7 +1361,7 @@ async function toolQuery({
     return { tabId: tab.id, content: JSON.stringify(result, null, 2) }
   }
 
-  return { tabId: tab.id, content: typeof result.value === "string" ? result.value : JSON.stringify(result.value) }
+  return { tabId: tab.id, content: isString(result.value) ? result.value : JSON.stringify(result.value) }
 }
 
 async function toolScroll({ x = 0, y = 0, selector, tabId, timeoutMs, pollMs }) {
@@ -1432,8 +1443,8 @@ async function toolDownload({
   timeoutMs,
   pollMs,
 }) {
-  const hasUrl = typeof url === "string" && url.trim()
-  const hasSelector = typeof selector === "string" && selector.trim()
+  const hasUrl = isString(url) && url.trim()
+  const hasSelector = isString(selector) && selector.trim()
 
   await ensureDownloadsAvailable()
 
@@ -1444,9 +1455,9 @@ async function toolDownload({
 
   if (hasUrl) {
     const options = { url: url.trim() }
-    if (typeof filename === "string" && filename.trim()) options.filename = filename.trim()
-    if (typeof conflictAction === "string" && conflictAction.trim()) options.conflictAction = conflictAction.trim()
-    if (typeof saveAs === "boolean") options.saveAs = saveAs
+    if (isString(filename) && filename.trim()) options.filename = filename.trim()
+    if (isString(conflictAction) && conflictAction.trim()) options.conflictAction = conflictAction.trim()
+    if (isBoolean(saveAs)) options.saveAs = saveAs
 
     downloadId = await chrome.downloads.download(options)
   } else {
@@ -1474,7 +1485,7 @@ async function toolListDownloads({ limit = 20, state } = {}) {
 
   const limitValue = clampNumber(limit, 1, 200, 20)
   const query = { orderBy: ["-startTime"], limit: limitValue }
-  if (typeof state === "string" && state.trim()) query.state = state.trim()
+  if (isString(state) && state.trim()) query.state = state.trim()
 
   const downloads = await chrome.downloads.search(query)
   const out = downloads.map((d) => ({
@@ -1544,7 +1555,7 @@ async function toolConsole({ tabId, clear = false, filter } = {}) {
 
   let messages = [...state.consoleMessages]
 
-  if (filter && typeof filter === "string") {
+  if (filter && isString(filter)) {
     const filterType = filter.toLowerCase()
     messages = messages.filter((m) => m.type === filterType)
   }

@@ -21,6 +21,7 @@
   "scripts": {
     "build": "bun build src/plugin.ts --target=node --outfile=dist/plugin.js",
     "build:cws": "node build-cws-package.mjs",
+    "lint": "oxlint",
     "check:extension": "node --check extension/background.js",
     "prepublishOnly": "bun run build",
     "publish": "node -e \"if (process.env.npm_command === 'publish') process.exit(0); require('child_process').execSync('npm publish --access public', { stdio: 'inherit' });\"",
@@ -53,6 +54,8 @@
     "@opencode-ai/plugin": "next"
   },
   "devDependencies": {
-    "bun-types": "*"
+    "@oxlint/plugins": "^1.78.0",
+    "bun-types": "*",
+    "oxlint": "^1.78.0"
   }
 }

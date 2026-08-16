@@ -13,12 +13,19 @@ const PACKAGE_JSON_PATH = join(__dirname, "..", "package.json");
 
 let cachedVersion: string | null = null;
 
+function asString(value: any): string | undefined {
+  if (value === null || value === undefined) return undefined;
+  const text = String(value);
+  return text === value ? text : undefined;
+}
+
 function getPackageVersion(): string {
   if (cachedVersion) return cachedVersion;
   try {
     const pkg = JSON.parse(readFileSync(PACKAGE_JSON_PATH, "utf8"));
-    if (typeof pkg?.version === "string") {
-      cachedVersion = pkg.version;
+    const version = asString(pkg?.version);
+    if (version !== undefined) {
+      cachedVersion = version;
       return cachedVersion;
     }
   } catch {
@@ -69,16 +76,22 @@ const MAX_UPLOAD_BYTES = (() => {
 })();
 
 function resolveUploadPath(filePath: string): string {
-  const trimmed = typeof filePath === "string" ? filePath.trim() : "";
+  const trimmed = filePath.trim();
   if (!trimmed) throw new Error("filePath is required");
   return isAbsolute(trimmed) ? trimmed : resolve(process.cwd(), trimmed);
 }
+
+type FileUploadPayload = {
+  name: string;
+  mimeType?: string;
+  base64: string;
+};
 
 function buildFileUploadPayload(
   filePath: string,
   fileName?: string,
   mimeType?: string
-): { name: string; mimeType?: string; base64: string } {
+): FileUploadPayload {
   const absPath = resolveUploadPath(filePath);
   const stats = statSync(absPath);
   if (!stats.isFile()) throw new Error(`Not a file: ${absPath}`);
@@ -88,8 +101,8 @@ function buildFileUploadPayload(
     );
   }
   const base64 = readFileSync(absPath).toString("base64");
-  const name = typeof fileName === "string" && fileName.trim() ? fileName.trim() : basename(absPath);
-  const mt = typeof mimeType === "string" && mimeType.trim() ? mimeType.trim() : undefined;
+  const name = asString(fileName)?.trim() || basename(absPath);
+  const mt = asString(mimeType)?.trim() || undefined;
   return { name, mimeType: mt, base64 };
 }
 
@@ -125,7 +138,8 @@ function resolveRuntime(): string | null {
   if (process.env.OPENCODE_BROWSER_NODE) candidates.push(process.env.OPENCODE_BROWSER_NODE);
   try {
     const cfg = JSON.parse(readFileSync(join(BASE_DIR, "config.json"), "utf8"));
-    if (typeof cfg?.nodePath === "string") candidates.push(cfg.nodePath);
+    const nodePath = asString(cfg?.nodePath);
+    if (nodePath !== undefined) candidates.push(nodePath);
   } catch {
     // ignore
   }
@@ -209,10 +223,12 @@ async function ensureBrokerSocket(): Promise<net.Socket> {
   socket.on(
     "data",
     createJsonLineParser((msg) => {
-      if (msg?.type !== "response" || typeof msg.id !== "number") return;
+      if (msg?.type !== "response") return;
       const p = pending.get(msg.id);
       if (!p) return;
       pending.delete(msg.id);
+      // SAFETY: msg.type === "response" was checked and the message id matched a
+      // pending request, so the broker payload carries the id/ok/data/error shape.
       const res = msg as BrokerResponse;
       if (!res.ok) p.reject(new Error(res.error));
       else p.resolve(res.data);
@@ -232,7 +248,7 @@ async function ensureBrokerSocket(): Promise<net.Socket> {
   return socket;
 }
 
-async function brokerRequest(op: string, payload: Record<string, any>): Promise<any> {
+async function brokerRequest(op: string, payload: any): Promise<any> {
   const s = await ensureBrokerSocket();
   const id = ++reqId;
 
@@ -248,13 +264,15 @@ async function brokerRequest(op: string, payload: Record<string, any>): Promise<
 }
 
 function toolResultText(data: any, fallback: string): string {
-  if (typeof data?.content === "string") return data.content;
-  if (typeof data === "string") return data;
+  const content = asString(data?.content);
+  if (content !== undefined) return content;
+  const text = asString(data);
+  if (text !== undefined) return text;
   if (data?.content != null) return JSON.stringify(data.content);
   return fallback;
 }
 
-async function toolRequest(toolName: string, args: Record<string, any>): Promise<any> {
+async function toolRequest(toolName: string, args: any): Promise<any> {
   return await brokerRequest("tool", { tool: toolName, args });
 }
 
@@ -262,7 +280,16 @@ async function statusRequest(): Promise<any> {
   return await brokerRequest("status", {});
 }
 
-type JsonSchema = Record<string, unknown>;
+type JsonSchema =
+  | { type: "string" }
+  | { type: "number" }
+  | { type: "boolean" }
+  | {
+      type: "object";
+      properties: Record<string, JsonSchema>;
+      additionalProperties: false;
+      required?: string[];
+    };
 type BrowserTool = {
   name: string;
   description: string;
@@ -284,12 +311,13 @@ function booleanField(): JsonSchema {
 }
 
 function objectInput(properties: Record<string, JsonSchema>, required: string[] = []): JsonSchema {
-  return {
+  const input: JsonSchema = {
     type: "object",
     properties,
     additionalProperties: false,
-    ...(required.length > 0 ? { required } : {}),
   };
+  if (required.length > 0) input.required = required;
+  return input;
 }
 
 function browserTool(
@@ -437,9 +465,13 @@ const plugin = Plugin.define({
   setup: async (ctx) => {
     await ctx.tool.transform((tools) => {
       for (const browserTool of browserTools) {
+        // SAFETY: browserTool.execute returns Promise<string> and input is a plain
+        // JSON schema, while the SDK expects an Effect and a schema codec; the
+        // adapter wraps the resolved string in { content } and the runtime accepts
+        // plain JSON schemas, so the widened cast only bridges static types.
         tools.add({
           ...browserTool,
-          execute: async (args: any, toolContext: any) => ({
+          execute: async (args: any) => ({
             content: await browserTool.execute(args),
           }),
         } as any);

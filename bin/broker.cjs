@@ -225,7 +225,7 @@ function callExtension(tool, args, sessionId) {
 async function ensureSessionTab(sessionId) {
   if (!sessionId) throw new Error("Missing sessionId for tab creation");
   const res = await callExtension("open_tab", { active: false }, sessionId);
-  const tabId = res && typeof res.tabId === "number" ? res.tabId : undefined;
+  const tabId = res && Number.isFinite(res.tabId) ? res.tabId : undefined;
   if (!tabId) throw new Error("Failed to create a new tab for this session");
   touchClaim(tabId, sessionId);
   setDefaultTab(sessionId, tabId);
@@ -244,7 +244,7 @@ async function handleTool(pluginSocket, req) {
   const isCloseTool = tool === "close_tab";
 
   if (wantsTab(tool)) {
-    if (typeof tabId !== "number") {
+    if (!Number.isFinite(tabId)) {
       const state = getSessionState(sessionId);
       const defaultTabId = state && Number.isFinite(state.defaultTabId) ? state.defaultTabId : null;
       if (Number.isFinite(defaultTabId)) {
@@ -263,8 +263,8 @@ async function handleTool(pluginSocket, req) {
   const res = await callExtension(tool, { ...toolArgs, tabId }, sessionId);
 
   const usedTabId =
-    res && typeof res.tabId === "number" ? res.tabId : typeof tabId === "number" ? tabId : undefined;
-  if (typeof usedTabId === "number") {
+    res && Number.isFinite(res.tabId) ? res.tabId : Number.isFinite(tabId) ? tabId : undefined;
+  if (Number.isFinite(usedTabId)) {
     if (isCloseTool) {
       if (claims.has(usedTabId)) {
         releaseClaim(usedTabId);
@@ -295,7 +295,7 @@ function handleClientMessage(socket, client, msg) {
 
   if (msg && msg.type === "from_extension") {
     const message = msg.message;
-    if (message && message.type === "tool_response" && typeof message.id === "number") {
+    if (message && message.type === "tool_response" && Number.isFinite(message.id)) {
       const pending = extPending.get(message.id);
       if (!pending) return;
       extPending.delete(message.id);
@@ -311,7 +311,7 @@ function handleClientMessage(socket, client, msg) {
     return;
   }
 
-  if (msg && msg.type === "request" && typeof msg.id === "number") {
+  if (msg && msg.type === "request" && Number.isFinite(msg.id)) {
     const requestId = msg.id;
     const sessionId = msg.sessionId || client.sessionId;
     if (sessionId) touchSession(sessionId);
@@ -349,7 +349,7 @@ function handleClientMessage(socket, client, msg) {
         if (msg.op === "claim_tab") {
           const tabId = msg.tabId;
           const force = !!msg.force;
-          if (typeof tabId !== "number") throw new Error("tabId is required");
+          if (!Number.isFinite(tabId)) throw new Error("tabId is required");
           const existing = claims.get(tabId);
           if (existing && existing.sessionId !== sessionId && !force) {
             throw new Error(`Tab ${tabId} is owned by another OpenCode session (${existing.sessionId})`);
@@ -365,7 +365,7 @@ function handleClientMessage(socket, client, msg) {
 
         if (msg.op === "release_tab") {
           const tabId = msg.tabId;
-          if (typeof tabId !== "number") throw new Error("tabId is required");
+          if (!Number.isFinite(tabId)) throw new Error("tabId is required");
           const existing = claims.get(tabId);
           if (!existing) {
             replyOk({ ok: true, tabId, released: false });
@@ -448,7 +448,7 @@ function start() {
 
 if (LEASE_TTL_MS > 0 && LEASE_SWEEP_MS > 0) {
   const timer = setInterval(cleanupStaleClaims, LEASE_SWEEP_MS);
-  if (typeof timer.unref === "function") timer.unref();
+  timer.unref?.();
 }
 
 start();

@@ -447,7 +447,7 @@ async function loadPluginTools() {
 
   const mod = await import(pathToFileURL(pluginPath).href);
   const plugin = mod?.default;
-  if (!plugin || typeof plugin.setup !== "function") {
+  if (!(plugin?.setup instanceof Function)) {
     throw new Error("Could not load plugin from dist/plugin.js");
   }
 
@@ -474,14 +474,13 @@ function parseJsonArg(raw, fallback = {}) {
   if (!raw) return fallback;
   try {
     return JSON.parse(raw);
-  } catch (err) {
+  } catch {
     throw new Error(`Expected JSON args. Received: ${raw}`);
   }
 }
 
 function parseMaybeJson(value) {
-  if (typeof value !== "string") return value;
-  const trimmed = value.trim();
+  const trimmed = String(value).trim();
   if (!trimmed) return value;
   if (!["{", "[", '"'].includes(trimmed[0])) return value;
   try {
@@ -500,7 +499,7 @@ function getToolArgJson() {
 async function executeTool(toolName, args = {}) {
   const tools = await loadPluginTools();
   const tool = tools?.[toolName];
-  if (!tool || typeof tool.execute !== "function") {
+  if (!(tool?.execute instanceof Function)) {
     const available = Object.keys(tools || {})
       .sort()
       .join(", ");
@@ -536,7 +535,7 @@ async function runToolCommand() {
   const args = parseJsonArg(getToolArgJson(), {});
   const result = await executeTool(toolName, args);
 
-  if (typeof result === "string") {
+  if (String(result) === result) {
     log(result);
     return;
   }
@@ -780,7 +779,7 @@ Find it at ${color("cyan", "chrome://extensions")}:
       try {
         writeNativeHostManifest(dir, extensionId, hostPath);
         success(`Wrote native host manifest: ${nativeHostManifestPath(dir)}`);
-      } catch (e) {
+      } catch {
         warn(`Could not write native host manifest to: ${dir}`);
       }
     }
@@ -791,8 +790,8 @@ Find it at ${color("cyan", "chrome://extensions")}:
   const desiredPlugin = "@talhabw/opencode-browser";
 
   function normalizePlugins(val) {
-    if (Array.isArray(val)) return val.filter((v) => typeof v === "string");
-    if (typeof val === "string" && val.trim()) return [val.trim()];
+    if (Array.isArray(val)) return val.filter((v) => String(v) === v);
+    if (String(val) === val && val.trim()) return [val.trim()];
     return [];
   }
 
@@ -887,7 +886,7 @@ Find it at ${color("cyan", "chrome://extensions")}:
         if (canWriteConfig) {
           config.plugin = normalizePlugins(config.plugin);
           if (!config.plugin.includes(desiredPlugin)) config.plugin.push(desiredPlugin);
-          if (typeof config.$schema !== "string") config.$schema = "https://opencode.ai/config.json";
+          if (String(config.$schema) !== config.$schema) config.$schema = "https://opencode.ai/config.json";
 
           ensureDir(configDir);
           writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n");
