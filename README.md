@@ -2,7 +2,7 @@
 
 Browser automation plugin for [OpenCode](https://opencode.ai).
 
-Control your real Chromium browser (Chrome/Brave/Arc/Edge) using your existing profile (logins, cookies, bookmarks). No DevTools Protocol, no security prompts.
+Control your real Chromium browser (Chrome/Brave/Arc/Edge) using your existing profile (logins, cookies, bookmarks). No remote-debugging flags or ports required, no security prompts — DevTools features ride on the `chrome.debugger` API.
 
 
 https://github.com/user-attachments/assets/1496b3b3-419b-436c-b412-8cda2fed83d6
@@ -156,6 +156,24 @@ Diagnostics:
 - `browser_snapshot`
 - `browser_screenshot`
 - `browser_version`
+
+DevTools (via Chrome DevTools Protocol, `chrome.debugger`):
+
+| Tool | DevTools panel | What it does |
+| --- | --- | --- |
+| `browser_console` | Console | Capture console log messages |
+| `browser_errors` | Console | Capture uncaught JS exceptions |
+| `browser_eval` | Console | Evaluate JS in the page context |
+| `browser_network` | Network | List captured requests/responses (filter, bodies, WebSockets, timing) |
+| `browser_cookies` | Application › Cookies | List/get/set/delete/clear cookies |
+| `browser_storage` | Application › Local/Session Storage | Read/write page storage |
+| `browser_performance` | Performance | `Performance.getMetrics` + resource timing |
+| `browser_devtools` | any other panel | Raw CDP passthrough: `DOM.*`, `Debugger.*`, `IndexedDB.*`, `Security.*`, `Log.*`, `Page.*`, `Emulation.*`, ... |
+
+Notes:
+- **Capture lifecycle**: the debugger attaches on the first devtools call on a tab and stays attached (so `browser_network` keeps capturing across calls). To capture a full page load, reload the page (`browser_navigate` to the same URL, or `browser_devtools` → `Page.reload`) after the first call.
+- **One debugger per tab**: Chrome allows a single debugger attachment per tab. If DevTools UI is open on a tab, devtools tools fail with a clear error — close DevTools (or use a different tab) and retry.
+- Devtools tools honor per-tab ownership like all other tools.
 
 ## Roadmap
 

@@ -29296,6 +29296,9 @@ function numberField() {
 function booleanField() {
   return { type: "boolean" };
 }
+function freeObjectField() {
+  return { type: "object", additionalProperties: true };
+}
 function objectInput(properties, required3 = []) {
   const input = {
     type: "object",
@@ -29465,7 +29468,50 @@ var browserTools = [
   browserTool("browser_errors", "Read JavaScript errors from the page. Uses chrome.debugger API for complete capture.", {
     tabId: numberField(),
     clear: booleanField()
-  }, async ({ tabId, clear }) => toolResultText(await toolRequest("errors", { tabId, clear }), "[]"))
+  }, async ({ tabId, clear }) => toolResultText(await toolRequest("errors", { tabId, clear }), "[]")),
+  browserTool("browser_network", 'Inspect network activity for the tab (DevTools Network tab). Lists captured requests/responses with method, URL, HTTP status, type (XHR/fetch/document/websocket), mimeType, timing, and sizes. Options: filter (case-insensitive substring matched against URL/method/type/status/mimeType/errorText), method (e.g. "GET"), onlyFailed, limit (max entries, default 100), includeBody (fetch response bodies and POST payloads; capped at 50 entries and 100 KB per body), clear (reset the captured log so a reload captures fresh traffic only). Capture starts on the first devtools call and persists across calls — reload the page afterwards to see a full load. Requires the tab to not be inspected by DevTools UI (only one debugger per tab).', {
+    tabId: numberField(),
+    filter: stringField(),
+    method: stringField(),
+    limit: numberField(),
+    onlyFailed: booleanField(),
+    includeBody: booleanField(),
+    clear: booleanField()
+  }, async ({ tabId, filter: filter9, method, limit, onlyFailed, includeBody, clear }) => toolResultText(await toolRequest("network", { tabId, filter: filter9, method, limit, onlyFailed, includeBody, clear }), "[]")),
+  browserTool("browser_eval", "Evaluate a JavaScript expression in the page's context (DevTools Console). Runs via CDP Runtime.evaluate with returnByValue, so the result must be JSON-serializable. Use to read page state (variables, fetch responses, framework stores, localStorage-backed data), trigger page-side logic, or verify behavior the DOM does not expose. Edge: true/false/null/undefined work; use awaitPromise (default true) for async IIFEs. Exceptions return { ok: false, error, exception, stack }. Large results are truncated (strings ~20 KB, arrays ~500 items). Requires the tab to not be inspected by DevTools UI (only one debugger per tab).", {
+    expression: stringField(),
+    tabId: numberField(),
+    awaitPromise: booleanField()
+  }, async ({ expression, tabId, awaitPromise }) => toolResultText(await toolRequest("eval", { expression, tabId, awaitPromise }), "eval failed"), ["expression"]),
+  browserTool("browser_cookies", "Read or modify cookies for the tab (DevTools Application > Cookies). action: list (default; all cookies or those for a url), get (by name, optionally scoped to url), set (needs name + value + url or domain; optional path, expires, httpOnly, secure, sameSite), delete (needs name + url or domain/path), clear (removes all browser cookies). Uses the Network CDP domain via the tab debugger. Requires the tab to not be inspected by DevTools UI (only one debugger per tab).", {
+    tabId: numberField(),
+    action: stringField(),
+    url: stringField(),
+    name: stringField(),
+    value: stringField(),
+    domain: stringField(),
+    path: stringField(),
+    expires: numberField(),
+    httpOnly: booleanField(),
+    secure: booleanField(),
+    sameSite: stringField()
+  }, async ({ tabId, action, url, name, value: value3, domain: domain2, path, expires, httpOnly, secure, sameSite }) => toolResultText(await toolRequest("cookies", { tabId, action, url, name, value: value3, domain: domain2, path, expires, httpOnly, secure, sameSite }), "cookie operation failed")),
+  browserTool("browser_storage", `Read or modify the page's local/session storage (DevTools Application > Local/Session Storage). storage: "local" (default) or "session" only, action: list (default), get (key), set (key + value), remove (key), clear. Operates on the page's origin via Runtime.evaluate in the page context. Requires the tab to not be inspected by DevTools UI (only one debugger per tab).`, {
+    tabId: numberField(),
+    action: stringField(),
+    storage: stringField(),
+    key: stringField(),
+    value: stringField()
+  }, async ({ tabId, action, storage, key, value: value3 }) => toolResultText(await toolRequest("storage", { tabId, action, storage, key, value: value3 }), "storage operation failed")),
+  browserTool("browser_performance", "Read performance data for the tab (DevTools Performance tab). Returns raw Performance.getMetrics counters (JS heap used, layout count, node count, FramesPerSecond when Chrome provides it, etc.). Set resources:true to also get resource-timing entries (last 100; per-resource duration, transfer size, status, initiator) and the navigation entry. Requires the tab to not be inspected by DevTools UI (only one debugger per tab).", {
+    tabId: numberField(),
+    resources: booleanField()
+  }, async ({ tabId, resources }) => toolResultText(await toolRequest("performance", { tabId, resources }), "performance call failed")),
+  browserTool("browser_devtools", `Send an arbitrary Chrome DevTools Protocol (CDP) command to the tab's debugger — the escape hatch for every DevTools panel without a dedicated tool. Examples: Elements/DOM: DOM.enable + DOM.getDocument + DOM.getOuterHTML; Sources/Debugger: Debugger.enable, Debugger.pause, Debugger.resume, Debugger.setBreakpointByUrl; Application: DOMStorage.getDOMStorageItems, IndexedDB.enable, Storage.*; Security: Security.enable/disable; Log: Log.enable, Log.clear; Page: Page.reload, Page.getLayoutMetrics, Page.navigate; Emulation: Emulation.setDeviceMetricsOverride. method is required (e.g. "DOM.getDocument"); params is a free-form object. Returns the CDP result wrapped as { ok, method, result }. Requires the tab to not be inspected by DevTools UI (only one debugger per tab).`, {
+    method: stringField(),
+    params: freeObjectField(),
+    tabId: numberField()
+  }, async ({ method, params, tabId }) => toolResultText(await toolRequest("devtools", { method, params, tabId }), "devtools command failed"), ["method"])
 ];
 var plugin = exports_plugin.define({
   id: "opencode-browser",

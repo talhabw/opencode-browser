@@ -51,7 +51,7 @@ Use the policy in `PRIVACY.md` and disclose local native messaging architecture 
 
 - `scripting` and site access: required to execute user-requested browser actions on pages the user authorizes.
 - `nativeMessaging`: required to connect Chrome extension commands to a local companion host process.
-- `debugger` (optional): used only for explicit diagnostics features (console and page errors).
+- `debugger` (optional): used only for explicit DevTools features (console and page errors, network inspection, JS evaluation, cookies/storage access, performance metrics, and raw DevTools Protocol commands).
 - `downloads` (optional): used for automation workflows that initiate downloads.
 
 ## 6) Manual submission steps

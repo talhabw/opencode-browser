@@ -20,7 +20,7 @@ What it does:
 - Click, type, select, query, and scroll on pages
 - Capture snapshots and screenshots
 - Manage downloads and file-input uploads
-- Optional diagnostics for console logs and page errors
+- Optional DevTools diagnostics and controls: console logs, page errors, network request inspection, JS evaluation, cookies, storage, performance metrics, and raw Chrome DevTools Protocol commands
 
 Architecture:
 
@@ -50,4 +50,4 @@ Host and link to the published version of `PRIVACY.md`.
 - `scripting` and site access: execute user-requested browser actions on user-authorized websites.
 - `nativeMessaging` (optional): bridge Chrome extension requests to a local companion process.
 - `downloads` (optional): support automation workflows that trigger file downloads.
-- `debugger` (optional): support explicit diagnostics features (console and page errors).
+- `debugger` (optional): support explicit DevTools features (console and page errors, network inspection, JS evaluation, cookies/storage access, performance metrics, and raw DevTools Protocol commands).

@@ -13,6 +13,9 @@ Depending on granted permissions and the sites you allow, the extension can acce
 - Screenshots and page snapshots requested by the user
 - Download metadata for files initiated by automation
 - Optional diagnostics data (console messages and page errors) when debugger permission is granted
+- Network activity metadata (request URLs, methods, status codes, headers, timings) when debugger permission is granted; request/response bodies are only retrieved when explicitly requested by an automation command
+- Cookie and storage (local/session storage) data when explicitly inspected or modified via automation commands
+- Results of JavaScript expressions evaluated in pages at the user's explicit request (`browser_eval`), performance metrics, and raw Chrome DevTools Protocol command results (`browser_devtools`)
 
 ## How data is used
 
@@ -30,6 +33,8 @@ Depending on granted permissions and the sites you allow, the extension can acce
 
 - Most data is processed in memory for the active automation session.
 - Console/error buffers are in-memory rolling buffers and are cleared when tabs close, extension restarts, or when explicitly cleared by tool calls.
+- Network capture buffers are in-memory rolling buffers (most recent ~400 requests per tab) and are cleared when tabs close, extension restarts, or when explicitly cleared via `browser_network`.
+- DevTools buffers (console/errors/network) are keyed per browser tab, not per OpenCode session: if a tab's ownership passes to another session, that session can read the buffered data until the tab closes, the extension restarts, or the buffer is cleared.
 - Native host configuration files are stored locally on the machine for installation and runtime setup.
 
 ## User controls

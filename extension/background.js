@@ -13,9 +13,10 @@ let isConnected = false
 let connectionAttempts = 0
 let nativePermissionHintLogged = false
 
-// Debugger state management for console/error capture
+// Debugger state management for devtools (console/errors/network/storage/...)
 const debuggerState = new Map()
 const MAX_LOG_ENTRIES = 1000
+const MAX_NETWORK_ENTRIES = 400
 
 function isString(value) {
   return Object.prototype.toString.call(value) === "[object String]"
@@ -27,6 +28,27 @@ function isBoolean(value) {
 
 function isRecord(value) {
   return value !== null && !Array.isArray(value) && Object.prototype.toString.call(value) === "[object Object]"
+}
+
+function truncateValue(value, maxStringLen = 20000, maxArrayItems = 500) {
+  if (value === null || value === undefined) return value
+  if (isString(value)) {
+    if (value.length <= maxStringLen) return value
+    return `${value.slice(0, maxStringLen)}...[truncated, ${value.length} chars total]`
+  }
+  if (Array.isArray(value)) {
+    const items = value.slice(0, maxArrayItems).map((v) => truncateValue(v, maxStringLen, maxArrayItems))
+    if (value.length > maxArrayItems) {
+      items.push(`...[truncated, ${value.length} items total]`)
+    }
+    return items
+  }
+  if (!isRecord(value)) return value
+  const out = {}
+  for (const key of Object.keys(value)) {
+    out[key] = truncateValue(value[key], maxStringLen, maxArrayItems)
+  }
+  return out
 }
 
 async function hasPermissions(query) {
@@ -127,25 +149,119 @@ async function ensureDebuggerAttached(tabId) {
     return {
       attached: false,
       unavailableReason: availability.reason,
+      attachError: availability.reason,
       consoleMessages: [],
       pageErrors: [],
+      networkRequests: [],
+      networkSeq: 0,
     }
   }
 
-  if (debuggerState.has(tabId)) return debuggerState.get(tabId)
-
-  const state = { attached: false, consoleMessages: [], pageErrors: [] }
-  debuggerState.set(tabId, state)
-
-  try {
-    await chrome.debugger.attach({ tabId }, "1.3")
-    await chrome.debugger.sendCommand({ tabId }, "Runtime.enable")
-    state.attached = true
-  } catch (e) {
-    console.warn("[OpenCode] Failed to attach debugger:", e.message || e)
+  const existing = debuggerState.get(tabId)
+  if (existing) {
+    // Concurrent first calls share the same in-flight attach.
+    if (existing.attaching) await existing.attaching
+    return existing
   }
 
+  const state = {
+    attached: false,
+    attachError: null,
+    attaching: null,
+    consoleMessages: [],
+    pageErrors: [],
+    networkRequests: [],
+    networkSeq: 0,
+  }
+  debuggerState.set(tabId, state)
+
+  const attach = (async () => {
+    try {
+      await chrome.debugger.attach({ tabId }, "1.3")
+      try {
+        await chrome.debugger.sendCommand({ tabId }, "Runtime.enable")
+      } catch (e) {
+        // Partial attach: roll back so the tab is not left with a broken debugger.
+        try {
+          await chrome.debugger.detach({ tabId })
+        } catch {}
+        throw new Error(`Runtime.enable failed: ${e?.message || String(e)}`)
+      }
+      try {
+        await chrome.debugger.sendCommand({ tabId }, "Network.enable")
+      } catch {
+        // Network capture is best-effort; other devtools still work without it.
+      }
+      state.attached = true
+    } catch (e) {
+      state.attachError = e?.message || String(e)
+      console.warn("[OpenCode] Failed to attach debugger:", state.attachError)
+      // Drop the failed state so the next call retries from scratch.
+      debuggerState.delete(tabId)
+    } finally {
+      state.attaching = null
+    }
+  })()
+
+  state.attaching = attach
+  await attach
   return state
+}
+
+function requireDebugger(state) {
+  if (!state?.attached) {
+    const reason = state?.attachError || state?.unavailableReason
+    throw new Error(
+      reason
+        ? `Debugger not attached: ${reason}`
+        : "Debugger not attached. Close DevTools on the tab (only one debugger may attach) and retry."
+    )
+  }
+}
+
+async function sendDebuggerCommand(tabId, method, params) {
+  const tab = await getTabById(tabId)
+  const state = await ensureDebuggerAttached(tab.id)
+  requireDebugger(state)
+  return await chrome.debugger.sendCommand({ tabId: tab.id }, method, params || {})
+}
+
+function findNetworkEntry(state, requestId) {
+  if (!state.networkRequests) state.networkRequests = []
+  let entry = state.networkRequests.find((r) => r.requestId === requestId)
+  if (!entry) {
+    if (state.networkRequests.length >= MAX_NETWORK_ENTRIES) state.networkRequests.shift()
+    // startedAt is filled from the CDP monotonic timestamp on requestWillBeSent;
+    // hasCdpStart guards duration math against mismatched clocks.
+    entry = { requestId, seq: ++state.networkSeq, startedAt: null, hasCdpStart: false }
+    state.networkRequests.push(entry)
+  }
+  return entry
+}
+
+function computeNetworkDuration(entry, finishedAt) {
+  if (
+    entry.hasCdpStart &&
+    entry.startedAt != null &&
+    Number.isFinite(entry.startedAt) &&
+    Number.isFinite(finishedAt) &&
+    finishedAt >= entry.startedAt
+  ) {
+    entry.duration = Math.round((finishedAt - entry.startedAt) * 1000) / 1000
+  }
+}
+
+function applyNetworkResponse(entry, response, isRedirect) {
+  entry.url = response.url || entry.url
+  entry.status = response.status
+  entry.statusText = response.statusText
+  entry.mimeType = response.mimeType
+  entry.responseHeaders = response.headers
+  entry.fromDiskCache = response.fromDiskCache || false
+  entry.protocol = response.protocol || null
+  entry.remoteIPAddress = response.remoteIPAddress || null
+  if (response.timing) entry.timing = response.timing
+  if (isRedirect) entry.redirected = true
 }
 
 if (chrome.debugger?.onEvent) {
@@ -179,15 +295,80 @@ if (chrome.debugger?.onEvent) {
         timestamp: Date.now(),
       })
     }
+
+    if (method === "Network.requestWillBeSent") {
+      const entry = findNetworkEntry(state, params.requestId)
+      entry.url = params.request.url
+      entry.method = params.request.method
+      entry.type = params.type || entry.type
+      entry.initiatorType = params.initiator?.type || entry.initiatorType
+      entry.requestHeaders = params.request.headers
+      entry.hasPostData = params.request.hasPostData || false
+      if (params.timestamp != null) {
+        entry.startedAt = params.timestamp
+        entry.hasCdpStart = true
+      }
+      if (params.wallTime != null) entry.wallTime = new Date(params.wallTime * 1000).toISOString()
+      if (params.redirectResponse) {
+        applyNetworkResponse(entry, params.redirectResponse, true)
+      }
+    }
+
+    if (method === "Network.responseReceived") {
+      const entry = findNetworkEntry(state, params.requestId)
+      applyNetworkResponse(entry, params.response, false)
+    }
+
+    if (method === "Network.loadingFinished") {
+      const entry = findNetworkEntry(state, params.requestId)
+      entry.finishedAt = params.timestamp != null ? params.timestamp : entry.finishedAt
+      entry.encodedDataLength = params.encodedDataLength
+      entry.decodedBodyLength = params.decodedBodyLength
+      computeNetworkDuration(entry, params.timestamp)
+      entry.responseLoaded = true
+    }
+
+    if (method === "Network.loadingFailed") {
+      const entry = findNetworkEntry(state, params.requestId)
+      entry.failed = true
+      entry.errorText = params.errorText
+      entry.canceled = !!params.canceled
+      entry.finishedAt = params.timestamp != null ? params.timestamp : entry.finishedAt
+      entry.type = params.type || entry.type
+      computeNetworkDuration(entry, params.timestamp)
+    }
+
+    if (method === "Network.webSocketCreated") {
+      const entry = findNetworkEntry(state, params.requestId)
+      entry.url = params.url
+      entry.method = "WebSocket"
+      entry.type = "WebSocket"
+      entry.wsState = "open"
+    }
+
+    if (method === "Network.webSocketFrameSent") {
+      const entry = findNetworkEntry(state, params.requestId)
+      entry.wsSentFrames = (entry.wsSentFrames || 0) + 1
+    }
+
+    if (method === "Network.webSocketFrameReceived") {
+      const entry = findNetworkEntry(state, params.requestId)
+      entry.wsReceivedFrames = (entry.wsReceivedFrames || 0) + 1
+    }
+
+    if (method === "Network.webSocketClosed") {
+      const entry = findNetworkEntry(state, params.requestId)
+      entry.wsState = "closed"
+      entry.finishedAt = params.timestamp != null ? params.timestamp : entry.finishedAt
+    }
   })
 }
 
 if (chrome.debugger?.onDetach) {
   chrome.debugger.onDetach.addListener((source) => {
-    if (debuggerState.has(source.tabId)) {
-      const state = debuggerState.get(source.tabId)
-      state.attached = false
-    }
+    // One debugger per tab: if we get detached (e.g. DevTools UI opened),
+    // drop local state so the next devtools call re-attaches cleanly.
+    debuggerState.delete(source.tabId)
   })
 }
 
@@ -323,6 +504,12 @@ async function executeTool(toolName, args) {
     highlight: toolHighlight,
     console: toolConsole,
     errors: toolErrors,
+    network: toolNetwork,
+    eval: toolEval,
+    cookies: toolCookies,
+    storage: toolStorage,
+    performance: toolPerformance,
+    devtools: toolDevtools,
   }
 
   const fn = tools[toolName]
@@ -1547,7 +1734,10 @@ async function toolConsole({ tabId, clear = false, filter } = {}) {
     return {
       tabId: tab.id,
       content: JSON.stringify({
-        error: state.unavailableReason || "Debugger not attached. DevTools may be open or another debugger is active.",
+        error:
+          state.attachError ||
+          state.unavailableReason ||
+          "Debugger not attached. Close DevTools on the tab (only one debugger may attach).",
         messages: [],
       }),
     }
@@ -1578,7 +1768,10 @@ async function toolErrors({ tabId, clear = false } = {}) {
     return {
       tabId: tab.id,
       content: JSON.stringify({
-        error: state.unavailableReason || "Debugger not attached. DevTools may be open or another debugger is active.",
+        error:
+          state.attachError ||
+          state.unavailableReason ||
+          "Debugger not attached. Close DevTools on the tab (only one debugger may attach).",
         errors: [],
       }),
     }
@@ -1594,6 +1787,287 @@ async function toolErrors({ tabId, clear = false } = {}) {
     tabId: tab.id,
     content: JSON.stringify(errors, null, 2),
   }
+}
+
+async function toolNetwork({ tabId, filter, method, limit, onlyFailed, includeBody, clear } = {}) {
+  const tab = await getTabById(tabId)
+  const state = await ensureDebuggerAttached(tab.id)
+  requireDebugger(state)
+
+  try {
+    await chrome.debugger.sendCommand({ tabId: tab.id }, "Network.enable", {})
+  } catch {}
+
+  if (clear) {
+    state.networkRequests = []
+    state.networkSeq = 0
+    return { tabId: tab.id, content: "Network log cleared. Reload the page to capture a fresh load." }
+  }
+
+  let requests = state.networkRequests.map((r) => ({ ...r }))
+  const methodFilter = isString(method) && method.trim() ? method.trim().toUpperCase() : null
+  const textFilter = isString(filter) && filter.trim() ? filter.trim().toLowerCase() : null
+
+  if (methodFilter || textFilter || onlyFailed) {
+    requests = requests.filter((r) => {
+      if (onlyFailed && !(r.failed || (Number.isFinite(r.status) && r.status >= 400))) return false
+      if (methodFilter && !(r.method || "").toUpperCase().includes(methodFilter)) return false
+      if (textFilter) {
+        const haystack = [r.url, r.method, r.type, r.status, r.mimeType, r.errorText]
+          .filter((v) => v !== undefined && v !== null)
+          .join(" ")
+          .toLowerCase()
+        if (!haystack.includes(textFilter)) return false
+      }
+      return true
+    })
+  }
+
+  const maxEntries = includeBody ? 50 : 200
+  const limitValue = clampNumber(limit, 1, maxEntries, 100)
+  let out = requests.slice(-limitValue)
+
+  if (includeBody) {
+    for (const r of out) {
+      if (r.responseLoaded && !r.failed) {
+        try {
+          const body = await chrome.debugger.sendCommand(
+            { tabId: tab.id },
+            "Network.getResponseBody",
+            { requestId: r.requestId }
+          )
+          const text = body.base64Encoded ? `[base64] ${body.body}` : body.body
+          r.responseBody = text.length > 100000 ? `${text.slice(0, 100000)}... (truncated)` : text
+        } catch {
+          r.responseBodyError = "not available (cached/redirected or body stored offscreen)"
+        }
+      }
+      if (r.hasPostData) {
+        try {
+          const post = await chrome.debugger.sendCommand(
+            { tabId: tab.id },
+            "Network.getRequestPostData",
+            { requestId: r.requestId }
+          )
+          const text = post.postData || ""
+          r.postData = text.length > 100000 ? `${text.slice(0, 100000)}... (truncated)` : text
+        } catch {}
+      }
+    }
+  }
+
+  return {
+    tabId: tab.id,
+    content: JSON.stringify({ count: out.length, total: requests.length, requests: out }, null, 2),
+  }
+}
+
+async function toolEval({ tabId, expression, awaitPromise = true } = {}) {
+  if (!isString(expression) || !expression.trim()) throw new Error("expression is required")
+  const tab = await getTabById(tabId)
+  const state = await ensureDebuggerAttached(tab.id)
+  requireDebugger(state)
+
+  const result = await chrome.debugger.sendCommand({ tabId: tab.id }, "Runtime.evaluate", {
+    expression,
+    returnByValue: true,
+    awaitPromise: !!awaitPromise,
+  })
+
+  if (result.exceptionDetails) {
+    return {
+      tabId: tab.id,
+      content: JSON.stringify(
+        {
+          ok: false,
+          error: result.exceptionDetails.text || "Uncaught exception",
+          exception: result.exceptionDetails.exception?.description || null,
+          stack: result.exceptionDetails.stackTrace?.callFrames?.slice(0, 10) || null,
+        },
+        null,
+        2
+      ),
+    }
+  }
+
+  const value = result.result || {}
+  return {
+    tabId: tab.id,
+    content: JSON.stringify(
+      {
+        ok: true,
+        type: value.type || null,
+        value:
+          value.value !== undefined
+            ? truncateValue(value.value)
+            : value.unserializableValue !== undefined
+              ? truncateValue(value.unserializableValue)
+              : value.description ?? null,
+      },
+      null,
+      2
+    ),
+  }
+}
+
+async function toolCookies({ tabId, action = "list", url, name, value, domain, path, expires, httpOnly, secure, sameSite } = {}) {
+  const tab = await getTabById(tabId)
+  const state = await ensureDebuggerAttached(tab.id)
+  requireDebugger(state)
+  const target = { tabId: tab.id }
+  const permittedActions = ["list", "get", "set", "delete", "clear"]
+  if (!permittedActions.includes(action)) {
+    throw new Error(`Unknown action: ${action}. Use one of: ${permittedActions.join(", ")}`)
+  }
+
+  if (action === "list") {
+    const result = url
+      ? await chrome.debugger.sendCommand(target, "Network.getCookies", { urls: [url] })
+      : await chrome.debugger.sendCommand(target, "Network.getAllCookies", {})
+    return { tabId: tab.id, content: JSON.stringify({ count: (result.cookies || []).length, cookies: result.cookies || [] }, null, 2) }
+  }
+
+  if (action === "get") {
+    if (!isString(name) || !name) throw new Error("name is required")
+    const cookies = url
+      ? (await chrome.debugger.sendCommand(target, "Network.getCookies", { urls: [url] })).cookies || []
+      : (await chrome.debugger.sendCommand(target, "Network.getAllCookies", {})).cookies || []
+    const matches = cookies.filter((c) => c.name === name)
+    if (!matches.length) return { tabId: tab.id, content: JSON.stringify({ found: false, cookie: null }) }
+    return { tabId: tab.id, content: JSON.stringify({ found: true, cookie: matches[0] }, null, 2) }
+  }
+
+  if (action === "set") {
+    if (!isString(name) || !name) throw new Error("name is required")
+    if (value === undefined) throw new Error("value is required (pass url or domain too)")
+    const cookie = { name, value: String(value) }
+    if (isString(url) && url.trim()) cookie.url = url.trim()
+    else if (isString(domain) && domain.trim()) cookie.domain = domain.trim()
+    else throw new Error("url or domain is required to set a cookie")
+    if (isString(path) && path.trim()) cookie.path = path.trim()
+    if (Number.isFinite(expires)) cookie.expires = expires
+    if (isBoolean(httpOnly)) cookie.httpOnly = httpOnly
+    if (isBoolean(secure)) cookie.secure = secure
+    if (isString(sameSite) && sameSite.trim()) {
+      const normalized = sameSite.trim()
+      const valid = ["Strict", "Lax", "None"].includes(normalized)
+      if (!valid) throw new Error(`sameSite must be Strict, Lax, or None (got: ${normalized})`)
+      cookie.sameSite = normalized
+    }
+    const result = await chrome.debugger.sendCommand(target, "Network.setCookie", cookie)
+    return {
+      tabId: tab.id,
+      content: JSON.stringify({ ok: !!result.success, cookie }, null, 2),
+    }
+  }
+
+  if (action === "delete") {
+    if (!isString(name) || !name) throw new Error("name is required")
+    const params = { name }
+    if (isString(url) && url.trim()) params.url = url.trim()
+    if (isString(domain) && domain.trim()) params.domain = domain.trim()
+    if (isString(path) && path.trim()) params.path = path.trim()
+    if (!params.url && !params.domain) throw new Error("url or domain is required to delete a cookie")
+    await chrome.debugger.sendCommand(target, "Network.deleteCookies", params)
+    return { tabId: tab.id, content: `Deleted cookie: ${params.name}` }
+  }
+
+  // action === "clear"
+  await chrome.debugger.sendCommand(target, "Network.clearBrowserCookies", {})
+  return { tabId: tab.id, content: "All cookies cleared" }
+}
+
+async function toolStorage({ tabId, action = "list", storage = "local", key, value } = {}) {
+  if (storage !== "local" && storage !== "session") {
+    throw new Error(`Unknown storage: ${storage}. Use "local" or "session"`)
+  }
+  const storageName = storage === "session" ? "sessionStorage" : "localStorage"
+  const tab = await getTabById(tabId)
+  const state = await ensureDebuggerAttached(tab.id)
+  requireDebugger(state)
+
+  let expression = null
+  if (action === "list") {
+    expression = `({ origin: location.origin, items: Object.entries(${storageName}).map(([k, v]) => ({ key: k, value: v })) })`
+  } else if (action === "get") {
+    if (!isString(key) || !key) throw new Error("key is required")
+    expression = `(() => { const v = ${storageName}.getItem(${JSON.stringify(key)}); return ({ origin: location.origin, found: v !== null, value: v }) })()`
+  } else if (action === "set") {
+    if (!isString(key) || !key) throw new Error("key is required")
+    if (value === undefined) throw new Error("value is required")
+    expression = `${storageName}.setItem(${JSON.stringify(key)}, ${JSON.stringify(String(value))}); ({ origin: location.origin, ok: true })`
+  } else if (action === "remove") {
+    if (!isString(key) || !key) throw new Error("key is required")
+    expression = `${storageName}.removeItem(${JSON.stringify(key)}); ({ origin: location.origin, ok: true })`
+  } else if (action === "clear") {
+    expression = `${storageName}.clear(); ({ origin: location.origin, ok: true })`
+  } else {
+    throw new Error(`Unknown action: ${action}. Use one of: list, get, set, remove, clear`)
+  }
+
+  const result = await chrome.debugger.sendCommand({ tabId: tab.id }, "Runtime.evaluate", {
+    expression,
+    returnByValue: true,
+  })
+
+  if (result.exceptionDetails) {
+    throw new Error(result.exceptionDetails.text || "Storage operation failed")
+  }
+
+  const out = { action, storage: storageName, result: result.result?.value ?? null }
+  return {
+    tabId: tab.id,
+    content: JSON.stringify(truncateValue(out), null, 2),
+  }
+}
+
+async function toolPerformance({ tabId, resources = false } = {}) {
+  const tab = await getTabById(tabId)
+  const state = await ensureDebuggerAttached(tab.id)
+  requireDebugger(state)
+
+  try {
+    await chrome.debugger.sendCommand({ tabId: tab.id }, "Performance.enable", {})
+  } catch {}
+
+  const perf = await chrome.debugger.sendCommand({ tabId: tab.id }, "Performance.getMetrics", {})
+  const out = {
+    metrics: (perf.metrics || []).map((m) => ({ name: m.name, value: m.value })),
+  }
+
+  if (resources) {
+    const expression = `(() => {
+      const nav = performance.getEntriesByType("navigation")[0] || null
+      const res = performance.getEntriesByType("resource").slice(-100).map((e) => ({
+        name: e.name,
+        initiatorType: e.initiatorType,
+        duration: e.duration,
+        transferSize: e.transferSize,
+        decodedBodySize: e.decodedBodySize,
+        status: e.responseStatus || null,
+      }))
+      return { origin: location.origin, navigation: nav ? { name: nav.name, url: nav.url, domContentLoadedEnd: nav.domContentLoadedEventEnd, loadEnd: nav.loadEventEnd, duration: nav.duration, transferSize: nav.transferSize } : null, resources: res }
+    })()`
+    const r = await chrome.debugger.sendCommand({ tabId: tab.id }, "Runtime.evaluate", {
+      expression,
+      returnByValue: true,
+    })
+    if (!r.exceptionDetails) out.resourceTiming = truncateValue(r.result?.value ?? null, 5000, 100)
+  }
+
+  return { tabId: tab.id, content: JSON.stringify(out, null, 2) }
+}
+
+async function toolDevtools({ tabId, method, params } = {}) {
+  if (!isString(method) || !method.trim()) {
+    throw new Error('method is required, e.g. "DOM.getDocument" (Chrome DevTools Protocol command)')
+  }
+  if (params !== undefined && !isRecord(params)) {
+    throw new Error("params must be a JSON object")
+  }
+
+  const result = await sendDebuggerCommand(tabId, method.trim(), params)
+  return { tabId: (await getTabById(tabId)).id, content: JSON.stringify({ ok: true, method: method.trim(), result }, null, 2) }
 }
 
 chrome.runtime.onInstalled.addListener(() => connect().catch(() => {}))
