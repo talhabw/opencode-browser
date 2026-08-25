@@ -133,7 +133,7 @@ function writeJsonLine(socket: net.Socket, msg: any): void {
   socket.write(JSON.stringify(msg) + "\n");
 }
 
-function resolveRuntime(): string | null {
+function resolveRuntime(): string {
   const candidates: string[] = [];
   if (process.env.OPENCODE_BROWSER_NODE) candidates.push(process.env.OPENCODE_BROWSER_NODE);
   try {
@@ -494,16 +494,12 @@ const plugin = Plugin.define({
   setup: async (ctx) => {
     await ctx.tool.transform((tools) => {
       for (const browserTool of browserTools) {
-        // SAFETY: browserTool.execute returns Promise<string> and input is a plain
-        // JSON schema, while the SDK expects an Effect and a schema codec; the
-        // adapter wraps the resolved string in { content } and the runtime accepts
-        // plain JSON schemas, so the widened cast only bridges static types.
         tools.add({
           ...browserTool,
           execute: async (args: any) => ({
             content: await browserTool.execute(args),
           }),
-        } as any);
+        });
       }
     });
   },
